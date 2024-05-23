@@ -189,7 +189,7 @@ async function main() {
         signedExtensions: typesBundle.signedExtensions,
         types: typesBundle.types[0].types,
     });
-    const blockNumber = 508439 + 310000 - 500;
+    const blockNumber = 508439 + 320000 - 500;
 
     const numConcurrentJobs = 1000
     for (let i = blockNumber; i < 5000000; i += numConcurrentJobs) {
