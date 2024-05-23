@@ -191,7 +191,7 @@ async function main() {
     });
     const blockNumber = 508439 + 310000 - 500;
 
-    const numConcurrentJobs = 3500
+    const numConcurrentJobs = 1000
     for (let i = blockNumber; i < 5000000; i += numConcurrentJobs) {
         console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
         console.time("processing");
