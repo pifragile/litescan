@@ -189,7 +189,7 @@ async function main() {
         signedExtensions: typesBundle.signedExtensions,
         types: typesBundle.types[0].types,
     });
-    const blockNumber = 508439 + 185000;
+    const blockNumber = 508439 + 270000;
 
     for (let i = blockNumber; i < 5000000; i += 5000) {
         console.log(`processing blocks ${i} - ${i + 5000}`);
