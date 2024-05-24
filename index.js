@@ -190,10 +190,10 @@ async function main() {
         types: typesBundle.types[0].types,
     });
     let blockNumber = 508439 + 320000 - 500;
-    blockNumber = 865939;
+    blockNumber = 4090939;
 
     const numConcurrentJobs = 1000
-    for (let i = blockNumber; i < 5000000; i += numConcurrentJobs) {
+    for (let i = blockNumber; i < 5500000; i += numConcurrentJobs) {
         console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
         console.time("processing");
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map((idx) => idx + i);
