@@ -75,7 +75,7 @@ const print = (obj) => {
     );
 };
 
-async function parseBlock(blockNumber, api = null) {
+async function parseBlock(blockNumber, api = null, swallowNonExistingBlocks=false) {
     try {
         if (!api) {
             const wsProvider = new WsProvider(ENCOINTER_RPC);
@@ -102,7 +102,8 @@ async function parseBlock(blockNumber, api = null) {
                 console.log(
                     `Block ${blockNumber} is not yet avaiable, skipping.`
                 );
-                return;
+                if(swallowNonExistingBlocks) return;
+                throw e
             }
         }
 
@@ -194,9 +195,10 @@ async function parseBlock(blockNumber, api = null) {
             await insertIntoCollection("extrinsics", extrinsic);
         });
         await insertIntoCollection("blocks", block);
+        console.log(`Processed block ${blockNumber}`)
     } catch (e) {
-        console.log(`ERROR processing block ${blockNumber}`);
-        console.log(e);
+        // console.log(`ERROR processing block ${blockNumber}`);
+        // console.log(e);
         throw e;
     }
 }
@@ -209,6 +211,18 @@ async function main() {
         types: typesBundle.types[0].types,
     });
 
+
+    let blockNumber = await getLastProcessedBlockNumber()
+    blockNumber = 5523106
+    while(true) {
+        try{
+            await parseBlock(blockNumber, api)
+        } catch (e) {
+            await new Promise(r => setTimeout(r, 5000));
+            continue
+        }
+        blockNumber++;
+    }
     let firstRun = true
     const unsubscribe = await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
         const currentBlockNumber = parseInt(header.number.toString())
