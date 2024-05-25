@@ -213,7 +213,6 @@ async function main() {
 
 
     let blockNumber = await getLastProcessedBlockNumber()
-    blockNumber = 5523106
     while(true) {
         try{
             await parseBlock(blockNumber, api)
