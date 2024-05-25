@@ -20,6 +20,11 @@ const db = dbClient.db("encointerIndexer");
 export const ENCOINTER_RPC =
     process.env.ENCOINTER_RPC || "wss://kusama.api.encointer.org";
 
+async function getLastProcessedBlockNumber() {
+    return (await db.collection("blocks").findOne({}, { sort: { height: -1 } }))
+        .height;
+}
+
 async function insertIntoCollection(collection, document) {
     try {
         await db.collection(collection).insertOne(document);
@@ -83,10 +88,24 @@ async function parseBlock(blockNumber, api = null) {
         }
 
         // returns Hash
-        const blockHash = await api.rpc.chain.getBlockHash(blockNumber);
+        let signedBlock;
+        let blockHash;
+        try {
+            blockHash = await api.rpc.chain.getBlockHash(blockNumber);
+            signedBlock = await api.rpc.chain.getBlock(blockHash);
+        } catch (e) {
+            if (
+                e.message.includes(
+                    "Unable to retrieve header and parent from supplied hash"
+                )
+            ) {
+                console.log(
+                    `Block ${blockNumber} is not yet avaiable, skipping.`
+                );
+                return;
+            }
+        }
 
-        // returns SignedBlock
-        const signedBlock = await api.rpc.chain.getBlock(blockHash);
 
         const apiAt = await api.at(signedBlock.block.header.hash);
         const allRecords = await apiAt.query.system.events();
@@ -189,17 +208,47 @@ async function main() {
         signedExtensions: typesBundle.signedExtensions,
         types: typesBundle.types[0].types,
     });
-    let blockNumber = 508439 + 320000 - 500;
-    blockNumber = 4090939;
 
-    const numConcurrentJobs = 1000
-    for (let i = blockNumber; i < 5500000; i += numConcurrentJobs) {
-        console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
-        console.time("processing");
-        let indexes = Array.from(Array(numConcurrentJobs).keys()).map((idx) => idx + i);
-        await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
-        console.timeEnd("processing");
-    }
+    let firstRun = true
+    const unsubscribe = await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
+        const currentBlockNumber = parseInt(header.number.toString())
+        if (firstRun) {
+            console.log('catching up with chain')
+            firstRun = false;
+            const lastBlockNumber = await getLastProcessedBlockNumber()
+            const numBlocksToProcess = currentBlockNumber - lastBlockNumber;
+            const numConcurrentJobs = Math.min(5000, numBlocksToProcess)
+            for (let i = lastBlockNumber; i < currentBlockNumber; i += numConcurrentJobs) {
+                console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
+                console.time("processing");
+                let indexes = Array.from(Array(numConcurrentJobs).keys()).map((idx) => idx + i);
+                await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
+                console.timeEnd("processing");
+            }
+        }
+
+        console.log(`Chain is at block: #${currentBlockNumber}`);
+        await parseBlock(currentBlockNumber, api)
+        console.log(`Processed block: #${currentBlockNumber}`);
+        // if (++count === 256) {
+        //   unsubscribe();
+        //   process.exit(0);
+        // }
+      });
+
+    // let blockNumber = 508439 + 320000 - 500;
+    // blockNumber = 5520000;
+
+    // const numConcurrentJobs = 5000;
+    // for (let i = blockNumber; i < 5530000; i += numConcurrentJobs) {
+    //     console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
+    //     console.time("processing");
+    //     let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
+    //         (idx) => idx + i
+    //     );
+    //     await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
+    //     console.timeEnd("processing");
+    // }
 }
 
 // 2500 - 30 sec
