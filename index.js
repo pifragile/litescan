@@ -157,6 +157,7 @@ async function parseBlock(blockNumber, api = null, swallowNonExistingBlocks=fals
                 return;
             }
 
+            extrinsic.timestamp = block.timestamp;
             const events = allRecords
                 .filter(
                     ({ phase }) =>
@@ -177,6 +178,7 @@ async function parseBlock(blockNumber, api = null, swallowNonExistingBlocks=fals
                 e.event.blockHash = blockHash.toHuman();
                 e.event._id = `${extrinsic._id}-${eventIndex}`;
                 e.event.extrinsicId = extrinsic._id;
+                e.event.timestamp = block.timestamp;
                 delete e.event.index;
             });
 
@@ -212,7 +214,8 @@ async function main() {
     });
 
 
-    let blockNumber = await getLastProcessedBlockNumber()
+    //let blockNumber = await getLastProcessedBlockNumber()
+    let blockNumber = 508439
     while(true) {
         try{
             await parseBlock(blockNumber, api)
