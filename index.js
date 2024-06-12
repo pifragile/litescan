@@ -214,8 +214,7 @@ async function main() {
     });
 
 
-    //let blockNumber = await getLastProcessedBlockNumber()
-    let blockNumber = 508439
+    let blockNumber = await getLastProcessedBlockNumber()
     while(true) {
         try{
             await parseBlock(blockNumber, api)
