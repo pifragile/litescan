@@ -30,6 +30,8 @@ async function main() {
         types: typesBundle.types[0].types,
     });
 
+    let numBlocks = await db.collection('blocks').countDocuments()
+
     let lastProcessedBlockNumber = (await db.collection("blocks").findOne({}, { sort: { height: -1 } }))
     .height;
 
@@ -37,10 +39,8 @@ async function main() {
     .height;
 
 
-    let numBlocks = await db.collection('blocks').countDocuments()
-
-    console.log(numBlocks)
-    console.log(lastProcessedBlockNumber - firstProcessedBlockNumber)
+    console.log(`expected number of blocks ${lastProcessedBlockNumber - firstProcessedBlockNumber + 1}`)
+    console.log(`found number of blocks ${numBlocks}`)
 }
 
 
