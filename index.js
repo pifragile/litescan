@@ -250,7 +250,7 @@ async function main() {
     });
 
     // last block number from safe base: 5506899
-    let lastProcessedBlockNumber = 5571398//await getLastProcessedBlockNumber();
+    let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let firstRun = true;
     const unsubscribe = await api.rpc.chain.subscribeFinalizedHeads(
         async (header) => {
