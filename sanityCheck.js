@@ -15,7 +15,7 @@ const dbClient = new MongoClient(process.env.DB_URL, {
     ssl: true,
     sslValidate: true,
 });
-const db = dbClient.db("encointerIndexer4");
+const db = dbClient.db("encointerIndexer3");
 
 export const ENCOINTER_RPC =
     process.env.ENCOINTER_RPC || "wss://kusama.api.encointer.org";
