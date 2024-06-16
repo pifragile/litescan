@@ -208,7 +208,7 @@ async function parseBlock(
 }
 
 async function catchUpWithChain(api, blockNumber, endBlockNumber) {
-    const numConcurrentJobs = 1000;
+    const numConcurrentJobs = 100;
     for (let i = blockNumber; i <= endBlockNumber; i += numConcurrentJobs) {
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
             (idx) => idx + i
