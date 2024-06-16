@@ -15,30 +15,31 @@ const dbClient = new MongoClient(process.env.DB_URL, {
     ssl: true,
     sslValidate: true,
 });
-const db = dbClient.db("encointerIndexer");
+const db = dbClient.db("encointerIndexer3");
 
 async function main() {
-    // const events = await (await db.collection("events").find({})).toArray();
+    const events = await (await db.collection("events").find({})).toArray();
 
-    // const updateEvent = async (event) => {
-    //     const block = await db
-    //         .collection("blocks")
-    //         .findOne({ _id: event.blockHash });
-    //     await db
-    //         .collection("events")
-    //         .updateOne(
-    //             { _id: event._id },
-    //             { $set: { timestamp: block.timestamp } }
-    //         );
-    // };
+    const updateEvent = async (event) => {
+        const block = await db
+            .collection("blocks")
+            .findOne({ _id: event.blockHash });
+        await db
+            .collection("events")
+            .updateOne(
+                { _id: event._id },
+                { $set: { timestamp: block.timestamp } }
+            );
+    };
 
-    // const chunkSize = 5000;
-    // for (let i = 0; i < events.length; i += chunkSize) {
-    //     console.log(i);
-    //     const chunk = events.slice(i, i + chunkSize);
-    //     await Promise.all(chunk.map((event) => updateEvent(event)));
-    // }
+    const chunkSize = 5000;
+    for (let i = 0; i < events.length; i += chunkSize) {
+        console.log(i);
+        const chunk = events.slice(i, i + chunkSize);
+        await Promise.all(chunk.map((event) => updateEvent(event)));
+    }
 
+    console.log('events done')
 
     const extrinsics = await (await db.collection("extrinsics").find({})).toArray();
 
@@ -54,7 +55,6 @@ async function main() {
             );
     };
 
-    const chunkSize = 5000;
     for (let i = 0; i < extrinsics.length; i += chunkSize) {
         console.log(i);
         const chunk = extrinsics.slice(i, i + chunkSize);
