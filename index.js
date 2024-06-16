@@ -208,7 +208,7 @@ async function parseBlock(
 }
 
 async function catchUpWithChain(api, blockNumber, endBlockNumber) {
-    const numConcurrentJobs = 5000;
+    const numConcurrentJobs = 1000;
     for (let i = blockNumber; i <= endBlockNumber; i += numConcurrentJobs) {
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
             (idx) => idx + i
@@ -216,7 +216,18 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
         indexes = indexes.filter(idx => (idx <= endBlockNumber))
         let msg = `processing blocks ${indexes[0]} - ${indexes[indexes.length - 1]}`
         console.time(msg);
-        await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
+
+
+        while(true) {
+            try{
+                await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
+                break
+            } catch (e) {
+                console.log(e)
+                await new Promise(r => setTimeout(r, 5000));
+                continue
+            }
+        }
         console.timeEnd(msg);
     }
 
@@ -239,7 +250,7 @@ async function main() {
     });
 
     // last block number from safe base: 5506899
-    let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
+    let lastProcessedBlockNumber = 5571398//await getLastProcessedBlockNumber();
     let firstRun = true;
     const unsubscribe = await api.rpc.chain.subscribeFinalizedHeads(
         async (header) => {
@@ -257,7 +268,16 @@ async function main() {
             }
 
             console.log(`Chain is at block: #${currentBlockNumber}`);
-            await parseBlock(currentBlockNumber, api);
+            while(true) {
+                try{
+                    await parseBlock(currentBlockNumber, api);
+                    break
+                } catch (e) {
+                    console.log(e)
+                    await new Promise(r => setTimeout(r, 5000));
+                    continue
+                }
+            }
             console.log(`Processed block ${currentBlockNumber}`);
         }
     );
