@@ -17,7 +17,10 @@ const dbClient = new MongoClient(process.env.DB_URL, {
 });
 const db = dbClient.db(process.env.DB_NAME);
 
-export const RPC_NODE = process.env.RPC_NODE
+export const RPC_NODE = process.env.RPC_NODE;
+
+export const NUM_CONCURRENT_JOBS = parseInt(process.env.NUM_CONCURRENT_JOBS);
+export const START_BLOCK = parseInt(process.env.START_BLOCK || 1);
 
 export async function getLastProcessedBlockNumber() {
     try {
@@ -25,7 +28,7 @@ export async function getLastProcessedBlockNumber() {
             await db.collection("blocks").findOne({}, { sort: { height: -1 } })
         ).height;
     } catch {
-        return parseInt(process.env.START_BLOCK || 1);
+        return START_BLOCK;
     }
 }
 
@@ -212,7 +215,7 @@ async function parseBlock(
 }
 
 async function catchUpWithChain(api, blockNumber, endBlockNumber) {
-    const numConcurrentJobs = parseInt(process.env.NUM_CONCURRENT_JOBS);
+    const numConcurrentJobs = NUM_CONCURRENT_JOBS;
     for (let i = blockNumber; i <= endBlockNumber; i += numConcurrentJobs) {
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
             (idx) => idx + i
@@ -273,93 +276,89 @@ export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
     }
 }
 
+async function catchUpAndIndexLive(api) {
+    // last block number from safe base: 5506899
+    let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
+    let firstRun = true;
+    await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
+        const currentBlockNumber = parseInt(header.number.toString());
+        if (firstRun) {
+            console.log("catching up with chain");
+            catchUpWithChain(
+                api,
+                // some margin of safety, no harm if the blaock were already indexed
+                // and it could be that it just took them very long and were not yet processed
+                Math.max(
+                    lastProcessedBlockNumber - NUM_CONCURRENT_JOBS * 5,
+                    START_BLOCK
+                ),
+                currentBlockNumber - 1
+            );
+            firstRun = false;
+        }
+
+        console.log(`Chain is at block: #${currentBlockNumber}`);
+        while (true) {
+            try {
+                await parseBlock(currentBlockNumber, api);
+                break;
+            } catch (e) {
+                console.log(e);
+                await new Promise((r) => setTimeout(r, 5000));
+                continue;
+            }
+        }
+        console.log(`Processed block ${currentBlockNumber}`);
+
+        if (currentBlockNumber % 5 === 0)
+            parseUnprocessedBlocks(
+                api,
+                currentBlockNumber - 10,
+                currentBlockNumber
+            );
+    });
+}
+
+async function getLastFinalizedBlock(api) {
+    return await api.rpc.chain.getBlock(await api.rpc.chain.getFinalizedHead());
+}
+
+async function getLastestFinalizedBlockNumber(api) {
+    return parseInt(
+        (await getLastFinalizedBlock(api)).block.header
+            .toHuman()
+            .number.replaceAll(",", "")
+    );
+}
+
 // init timestamp 1716415200000
 export async function main() {
     const wsProvider = new WsProvider(RPC_NODE);
-    // Create our API with a default connection to the local node
     const api = await ApiPromise.create({
         provider: wsProvider,
         signedExtensions: typesBundle.signedExtensions,
         types: typesBundle.types[0].types,
     });
 
-    // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
-    let firstRun = true;
-    await api.rpc.chain.subscribeFinalizedHeads(
-        async (header) => {
-            const currentBlockNumber = parseInt(header.number.toString());
-            if (firstRun) {
-                console.log("catching up with chain");
-                catchUpWithChain(
-                    api,
-                    // some margin of safety, no harm if the blaock were already indexed
-                    // and it could be that it just took them very long and were not yet processed
-                    lastProcessedBlockNumber - parseInt(process.env.NUM_CONCURRENT_JOBS) * 5,
-                    currentBlockNumber - 1
-                );
-                firstRun = false;
-            }
+    let currentBlockNumber = await getLastestFinalizedBlockNumber(api);
 
-            console.log(`Chain is at block: #${currentBlockNumber}`);
-            while (true) {
-                try {
-                    await parseBlock(currentBlockNumber, api);
-                    break;
-                } catch (e) {
-                    console.log(e);
-                    await new Promise((r) => setTimeout(r, 5000));
-                    continue;
-                }
-            }
-            console.log(`Processed block ${currentBlockNumber}`);
+    while (
+        currentBlockNumber - lastProcessedBlockNumber >
+        NUM_CONCURRENT_JOBS
+    ) {
+        await catchUpWithChain(
+            api,
+            Math.max(
+                lastProcessedBlockNumber - 2 * NUM_CONCURRENT_JOBS,
+                START_BLOCK
+            ),
+            currentBlockNumber
+        );
+        lastProcessedBlockNumber = await getLastProcessedBlockNumber(api);
+        currentBlockNumber = await getLastestFinalizedBlockNumber(api);
+    }
 
-            if (currentBlockNumber % 5 === 0)
-                parseUnprocessedBlocks(
-                    api,
-                    currentBlockNumber - 10,
-                    currentBlockNumber
-                );
-        }
-    );
-
-    // let firstRun = true
-    // const unsubscribe = await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
-    //     const currentBlockNumber = parseInt(header.number.toString())
-    //     if (firstRun) {
-    //         console.log('catching up with chain')
-    //         firstRun = false;
-    //         const lastBlockNumber = await getLastProcessedBlockNumber()
-    //         const numBlocksToProcess = currentBlockNumber - lastBlockNumber;
-    //         const numConcurrentJobs = Math.min(5000, numBlocksToProcess)
-    //         for (let i = lastBlockNumber; i < currentBlockNumber; i += numConcurrentJobs) {
-    //             console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
-    //             console.time("processing");
-    //             let indexes = Array.from(Array(numConcurrentJobs).keys()).map((idx) => idx + i);
-    //             await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
-    //             console.timeEnd("processing");
-    //         }
-    //     }
-
-    //     console.log(`Chain is at block: #${currentBlockNumber}`);
-    //     await parseBlock(currentBlockNumber, api)
-    //     console.log(`Processed block: #${currentBlockNumber}`);
-    //   });
-
-    // let blockNumber = 508439 + 320000 - 500;
-    // blockNumber = 5520000;
-
-    // const numConcurrentJobs = 5000;
-    // for (let i = blockNumber; i < 5530000; i += numConcurrentJobs) {
-    //     console.log(`processing blocks ${i} - ${i + numConcurrentJobs}`);
-    //     console.time("processing");
-    //     let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
-    //         (idx) => idx + i
-    //     );
-    //     await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
-    //     console.timeEnd("processing");
-    // }
+    console.log("Switching to live mode");
+    await catchUpAndIndexLive(api);
 }
-
-// 2500 - 30 sec
-// 5000 - 28 sec lol
