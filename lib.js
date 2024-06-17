@@ -251,7 +251,7 @@ export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
 export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
     const unprocessedBlockNumbers = await findUnprocessedBlockNumbers(blockNumber, endBlockNumber)
     await Promise.all(unprocessedBlockNumbers.map((idx) => parseBlock(idx, api)));
-    console.log(`done parsing ${unprocessedBlockNumbers.length} blocks`)
+    console.log(`done parsing blocks ${unprocessedBlockNumbers}`)
 }
 
 // init timestamp 1716415200000
@@ -294,6 +294,8 @@ export async function main() {
                 }
             }
             console.log(`Processed block ${currentBlockNumber}`);
+
+            if(currentBlockNumber % 5 === 0) parseUnprocessedBlocks(api, currentBlockNumber - 10, currentBlockNumber)
         }
     );
 
