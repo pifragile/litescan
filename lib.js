@@ -286,7 +286,7 @@ export async function main() {
     // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let firstRun = true;
-    const unsubscribe = await api.rpc.chain.subscribeFinalizedHeads(
+    await api.rpc.chain.subscribeFinalizedHeads(
         async (header) => {
             const currentBlockNumber = parseInt(header.number.toString());
             if (firstRun) {
@@ -295,7 +295,7 @@ export async function main() {
                     api,
                     // some margin of safety, no harm if the blaock were already indexed
                     // and it could be that it just took them very long and were not yet processed
-                    lastProcessedBlockNumber - 500,
+                    lastProcessedBlockNumber - parseInt(process.env.NUM_CONCURRENT_JOBS) * 5,
                     currentBlockNumber - 1
                 );
                 firstRun = false;
