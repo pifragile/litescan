@@ -15,7 +15,7 @@ const dbClient = new MongoClient(process.env.DB_URL, {
     ssl: true,
     sslValidate: true,
 });
-const db = dbClient.db(process.env.DB_NAME);
+export const db = dbClient.db(process.env.DB_NAME);
 
 export const RPC_NODE = process.env.RPC_NODE;
 

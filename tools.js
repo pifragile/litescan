@@ -1,21 +1,6 @@
-import { ApiPromise, WsProvider } from "@polkadot/api";
-import typesBundle from "./typesBundle.js";
-
-import bs58 from "bs58";
-import { parseEncointerBalance } from "@encointer/types";
-
-import util from "util";
-import BN from "bn.js";
-import { MongoClient } from "mongodb";
-
 import * as dotenv from "dotenv";
+import { db } from "./lib.js";
 dotenv.config();
-
-const dbClient = new MongoClient(process.env.DB_URL, {
-    ssl: true,
-    sslValidate: true,
-});
-const db = dbClient.db("encointerIndexer3");
 
 async function main() {
     const events = await (await db.collection("events").find({})).toArray();

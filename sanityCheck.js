@@ -1,14 +1,9 @@
 import { ApiPromise, WsProvider } from "@polkadot/api";
 import typesBundle from "./typesBundle.js";
-
-import bs58 from "bs58";
-import { parseEncointerBalance } from "@encointer/types";
-
-import util from "util";
-import BN from "bn.js";
 import { MongoClient } from "mongodb";
 
 import * as dotenv from "dotenv";
+import { RPC_NODE } from "./lib.js";
 dotenv.config();
 
 const dbClient = new MongoClient(process.env.DB_URL, {
@@ -17,12 +12,9 @@ const dbClient = new MongoClient(process.env.DB_URL, {
 });
 const db = dbClient.db(process.env.DB_NAME);
 
-export const ENCOINTER_RPC =
-    process.env.ENCOINTER_RPC || "wss://kusama.api.encointer.org";
-
 
 async function main() {
-    const wsProvider = new WsProvider(ENCOINTER_RPC);
+    const wsProvider = new WsProvider(RPC_NODE);
     // Create our API with a default connection to the local node
     let api = await ApiPromise.create({
         provider: wsProvider,
