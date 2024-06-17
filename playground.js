@@ -34,10 +34,16 @@ async function main() {
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber()
     let unprocessedBlockNumbers = await findUnprocessedBlockNumbers(lastProcessedBlockNumber - 14400, lastProcessedBlockNumber)
+
+    unprocessedBlockNumbers = await findUnprocessedBlockNumbers(508439, lastProcessedBlockNumber)
+
     console.log(unprocessedBlockNumbers.length)
     console.log(unprocessedBlockNumbers)
 
-    await parseUnprocessedBlocks(api, lastProcessedBlockNumber - 14400, lastProcessedBlockNumber)
+
+
+
+    // await parseUnprocessedBlocks(api, lastProcessedBlockNumber - 14400, lastProcessedBlockNumber)
 
 }
 
