@@ -15,14 +15,18 @@ const dbClient = new MongoClient(process.env.DB_URL, {
     ssl: true,
     sslValidate: true,
 });
-const db = dbClient.db("encointerIndexer3");
+const db = dbClient.db(process.env.DB_NAME);
 
-export const ENCOINTER_RPC =
-    process.env.ENCOINTER_RPC || "wss://kusama.api.encointer.org";
+export const RPC_NODE = process.env.RPC_NODE
 
 export async function getLastProcessedBlockNumber() {
-    return (await db.collection("blocks").findOne({}, { sort: { height: -1 } }))
-        .height;
+    try {
+        return (
+            await db.collection("blocks").findOne({}, { sort: { height: -1 } })
+        ).height;
+    } catch {
+        return parseInt(process.env.START_BLOCK || 1);
+    }
 }
 
 async function insertIntoCollection(collection, document) {
@@ -82,7 +86,7 @@ async function parseBlock(
 ) {
     try {
         if (!api) {
-            const wsProvider = new WsProvider(ENCOINTER_RPC);
+            const wsProvider = new WsProvider(RPC_NODE);
             // Create our API with a default connection to the local node
             api = await ApiPromise.create({
                 provider: wsProvider,
@@ -213,24 +217,24 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
             (idx) => idx + i
         );
-        indexes = indexes.filter(idx => (idx <= endBlockNumber))
-        let msg = `processing blocks ${indexes[0]} - ${indexes[indexes.length - 1]}`
+        indexes = indexes.filter((idx) => idx <= endBlockNumber);
+        let msg = `processing blocks ${indexes[0]} - ${
+            indexes[indexes.length - 1]
+        }`;
         console.time(msg);
 
-
-        while(true) {
-            try{
+        while (true) {
+            try {
                 await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
-                break
+                break;
             } catch (e) {
-                console.log(e)
-                await new Promise(r => setTimeout(r, 5000));
-                continue
+                console.log(e);
+                await new Promise((r) => setTimeout(r, 5000));
+                continue;
             }
         }
         console.timeEnd(msg);
     }
-
 
     // sequential version
     // for (; blockNumber <= endBlockNumber; blockNumber++) {
@@ -240,25 +244,38 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
 }
 
 export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
-    const blocks = db.collection('blocks')
-    let processedBlockNumbers = await (await blocks.find({"height" : {"$gte": blockNumber, "$lte": endBlockNumber}}).project({ height: 1, "_id": -1 })).toArray();
-    processedBlockNumbers = processedBlockNumbers.map(e => e.height)
-    const expectedBlockNumbers = Array(endBlockNumber - blockNumber + 1).fill().map((_, idx) => blockNumber + idx)
-    let unprocessedBlockNumbers = expectedBlockNumbers.filter(e => !processedBlockNumbers.includes(e))
-    return unprocessedBlockNumbers
+    const blocks = db.collection("blocks");
+    let processedBlockNumbers = await (
+        await blocks
+            .find({ height: { $gte: blockNumber, $lte: endBlockNumber } })
+            .project({ height: 1, _id: -1 })
+    ).toArray();
+    processedBlockNumbers = processedBlockNumbers.map((e) => e.height);
+    const expectedBlockNumbers = Array(endBlockNumber - blockNumber + 1)
+        .fill()
+        .map((_, idx) => blockNumber + idx);
+    let unprocessedBlockNumbers = expectedBlockNumbers.filter(
+        (e) => !processedBlockNumbers.includes(e)
+    );
+    return unprocessedBlockNumbers;
 }
 
 export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
-    const unprocessedBlockNumbers = await findUnprocessedBlockNumbers(blockNumber, endBlockNumber)
-    await Promise.all(unprocessedBlockNumbers.map((idx) => parseBlock(idx, api)));
-    if(unprocessedBlockNumbers.length > 0){
-        console.log(`done parsing blocks ${unprocessedBlockNumbers}`)
+    const unprocessedBlockNumbers = await findUnprocessedBlockNumbers(
+        blockNumber,
+        endBlockNumber
+    );
+    await Promise.all(
+        unprocessedBlockNumbers.map((idx) => parseBlock(idx, api))
+    );
+    if (unprocessedBlockNumbers.length > 0) {
+        console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
     }
 }
 
 // init timestamp 1716415200000
 export async function main() {
-    const wsProvider = new WsProvider(ENCOINTER_RPC);
+    const wsProvider = new WsProvider(RPC_NODE);
     // Create our API with a default connection to the local node
     const api = await ApiPromise.create({
         provider: wsProvider,
@@ -285,19 +302,24 @@ export async function main() {
             }
 
             console.log(`Chain is at block: #${currentBlockNumber}`);
-            while(true) {
-                try{
+            while (true) {
+                try {
                     await parseBlock(currentBlockNumber, api);
-                    break
+                    break;
                 } catch (e) {
-                    console.log(e)
-                    await new Promise(r => setTimeout(r, 5000));
-                    continue
+                    console.log(e);
+                    await new Promise((r) => setTimeout(r, 5000));
+                    continue;
                 }
             }
             console.log(`Processed block ${currentBlockNumber}`);
 
-            if(currentBlockNumber % 5 === 0) parseUnprocessedBlocks(api, currentBlockNumber - 10, currentBlockNumber)
+            if (currentBlockNumber % 5 === 0)
+                parseUnprocessedBlocks(
+                    api,
+                    currentBlockNumber - 10,
+                    currentBlockNumber
+                );
         }
     );
 
@@ -341,4 +363,3 @@ export async function main() {
 
 // 2500 - 30 sec
 // 5000 - 28 sec lol
-
