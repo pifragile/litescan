@@ -313,7 +313,7 @@ async function catchUpAndIndexLive(api) {
         if (currentBlockNumber % 5 === 0)
             parseUnprocessedBlocks(
                 api,
-                currentBlockNumber - 10,
+                currentBlockNumber - 20,
                 currentBlockNumber
             );
     });
