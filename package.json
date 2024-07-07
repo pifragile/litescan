@@ -10,11 +10,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@encointer/types": "^0.14.0",
-    "@encointer/util": "^0.14.0",
-    "@encointer/worker-api": "^0.14.0",
     "@polkadot/api": "^11",
-    "bs58": "^5.0.0",
     "csv": "^6.3.1",
     "dotenv": "^16.4.5",
     "mongodb": "^5.0"
