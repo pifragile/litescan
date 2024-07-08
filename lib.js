@@ -5,10 +5,15 @@ import { MongoClient } from "mongodb";
 import * as dotenv from "dotenv";
 dotenv.config();
 
-const dbClient = new MongoClient(process.env.DB_URL, {
-    ssl: true,
-    sslValidate: true,
-});
+const config =
+    process.env.DB_USE_SSL === "true"
+        ? {
+              ssl: true,
+              sslValidate: true,
+          }
+        : {};
+
+const dbClient = new MongoClient(process.env.DB_URL, config);
 export const db = dbClient.db(process.env.DB_NAME);
 
 export const RPC_NODE = process.env.RPC_NODE;
@@ -54,7 +59,7 @@ async function parseBlock(
         if (!api) {
             const wsProvider = new WsProvider(RPC_NODE);
             api = await ApiPromise.create({
-                provider: wsProvider
+                provider: wsProvider,
             });
         }
 
@@ -267,9 +272,8 @@ async function getLastestFinalizedBlockNumber(api) {
 export async function main() {
     const wsProvider = new WsProvider(RPC_NODE);
     const api = await ApiPromise.create({
-        provider: wsProvider
+        provider: wsProvider,
     });
-
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let currentBlockNumber = await getLastestFinalizedBlockNumber(api);
@@ -288,7 +292,7 @@ export async function main() {
         );
         lastProcessedBlockNumber = await getLastProcessedBlockNumber(api);
         currentBlockNumber = await getLastestFinalizedBlockNumber(api);
-        break
+        break;
     }
 
     console.log("Switching to live mode");

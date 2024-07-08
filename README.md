@@ -99,6 +99,7 @@ The following environment variables are required:
 | Variable    | Description |
 | -------- | ------- |
 | DB_URL  | Mongo connection string    |
+| DB_USE_SSL  | Bool indicating wether DB connection should use SSL. Set to true for prod.    |
 | DB_NAME    | Database name    |
 | RPC_NODE | RPC node url     |
 | START_BLOCK | Block number from which to start indexing     |
