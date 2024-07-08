@@ -17,7 +17,7 @@ services:
     environment:
       DB_URL: mongodb://root:example@mongo:27017/
       DB_USE_SSL: false
-      NUM_CONCURRENT_JOBS: 1
+      NUM_CONCURRENT_JOBS: 100
       DB_NAME: indexer
       RPC_NODE: "wss://rpc.polkadot.io"
       START_BLOCK: 21000000
