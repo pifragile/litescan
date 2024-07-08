@@ -101,7 +101,7 @@ The following environment variables are required:
 | DB_URL  | Mongo connection string    |
 | DB_NAME    | Database name    |
 | RPC_NODE | RPC node url     |
-| START_BLOCK | Block from which to start indexing     |
+| START_BLOCK | Block number from which to start indexing     |
 | NUM_CONCURRENT_JOBS    | Number of concurrent blocks indexed (100 is safe on the smallest Digital Ocean droplet, on my MB Pro M3 MAX, 64Gb Ram, I can do up to 5000 (given that the RPC node does not have a rate limit))    |
 
 ## Run
