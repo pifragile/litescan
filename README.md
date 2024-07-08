@@ -56,6 +56,8 @@ Now you have the indexer up and running and you get a simple web interface to in
 
 ### Webapp Examples:
 
+The Webapp will be available at `http://localhost:8081`
+
 #### Overview
 
 [Blocks](http://localhost:8081/db/indexer/blocks)\
@@ -80,7 +82,7 @@ You can play with the queries [here](`http://localhost:8081/db/indexer/extrinsic
 
 
 ### Programmatic queries:
-You can also easily access the the database directly from your code, find an example in `example.js`. Simply run
+You can also easily access the the database directly from your code at `mongodb://root:example@localhost:27017/`, find an example in `example.js`. Simply run
 ```
 npm install
 node example.js
