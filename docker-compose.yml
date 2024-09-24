@@ -19,8 +19,9 @@ services:
       DB_USE_SSL: false
       NUM_CONCURRENT_JOBS: 100
       DB_NAME: indexer
-      RPC_NODE: "wss://kusama.api.integritee.network"
-      START_BLOCK: 6062900
+      RPC_NODE: "wss://rpc.polkadot.io"
+      START_BLOCK: 21000000
+
 
   mongo-express:
     image: mongo-express
