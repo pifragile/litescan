@@ -89,6 +89,7 @@ async function parseBlock(
             _id: blockHash.toHuman(),
             height: blockNumber,
             timestamp: null,
+            author: signedBlock.block.header.author.toHuman(),
         };
 
         signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
