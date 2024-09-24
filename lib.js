@@ -271,12 +271,17 @@ async function getLastestFinalizedBlockNumber(api) {
 }
 
 async function getLastAuthoredBlocks(api) {
-    const lastAuthoredBlocks = await api.query.collatorSelection.lastAuthoredBlock.entries();
-    return lastAuthoredBlocks.map(([key, value]) => {
-        const collator = key.toHuman();
-        const blockNumber = value.toNumber();
-        return [collator, blockNumber];
-    });
+    try {
+        const lastAuthoredBlocks = await api.query.collatorSelection.lastAuthoredBlock.entries();
+        return lastAuthoredBlocks.map(([key, value]) => {
+            const collator = key.toHuman();
+            const blockNumber = value.toNumber();
+            return [collator, blockNumber];
+        });
+    }
+    catch (e) {
+        return [];
+    }
 }
 
 async function getBlockAuthor(api, blockNumber) {
