@@ -89,6 +89,7 @@ async function parseBlock(
             _id: blockHash.toHuman(),
             height: blockNumber,
             timestamp: null,
+            specversion: apiAt.runtimeVersion.specVersion.toNumber(),
         };
 
         signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
@@ -152,6 +153,21 @@ async function parseBlock(
 
             await insertIntoCollection("extrinsics", extrinsic);
         });
+        const systemEvents = allRecords
+          .filter(
+            ({ phase }) =>
+              phase.isFinalization || phase.isInitialization
+          )
+          .map((e) => e.toHuman());
+        systemEvents.forEach(async (e, eventIndex) => {
+            e.event.blockNumber = blockNumber;
+            e.event.blockHash = blockHash.toHuman();
+            e.event._id = `${blockNumber}-${eventIndex}`;
+            e.event.extrinsicId = null;
+            e.event.timestamp = block.timestamp;
+            delete e.event.index;
+            await insertIntoCollection("events", e.event);
+        })
         await insertIntoCollection("blocks", block);
     } catch (e) {
         throw e;
