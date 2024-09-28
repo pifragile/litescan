@@ -89,6 +89,7 @@ async function parseBlock(
             _id: blockHash.toHuman(),
             height: blockNumber,
             timestamp: null,
+            specversion: apiAt.runtimeVersion.specVersion.toNumber(),
         };
 
         signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
