@@ -89,6 +89,7 @@ async function parseBlock(
             _id: blockHash.toHuman(),
             height: blockNumber,
             timestamp: null,
+            author: await getBlockAuthor(apiAt, blockNumber),
         };
 
         signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
@@ -267,6 +268,26 @@ async function getLastestFinalizedBlockNumber(api) {
             .toHuman()
             .number.replaceAll(",", "")
     );
+}
+
+async function getLastAuthoredBlocks(api) {
+    try {
+        const lastAuthoredBlocks = await api.query.collatorSelection.lastAuthoredBlock.entries();
+        return lastAuthoredBlocks.map(([key, value]) => {
+            const collator = key.toHuman();
+            const blockNumber = value.toNumber();
+            return [collator, blockNumber];
+        });
+    }
+    catch (e) {
+        return [];
+    }
+}
+
+async function getBlockAuthor(api, blockNumber) {
+    const lastAuthoredBlocks = await getLastAuthoredBlocks(api);
+    const authorEntry = lastAuthoredBlocks.find(([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber);
+    return authorEntry ? authorEntry[0][0] : null;
 }
 
 export async function main() {
