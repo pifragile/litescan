@@ -104,6 +104,7 @@ The following environment variables are required:
 | DB_USE_SSL  | Bool indicating wether DB connection should use SSL. Set to true for prod.    |
 | DB_NAME    | Database name    |
 | RPC_NODE | RPC node url     |
+| DEBUG | if true, enables debug mode and does not connect to db but just prints objects to be inserted to console.     |
 | START_BLOCK | Block number from which to start indexing     |
 | NUM_CONCURRENT_JOBS    | Number of concurrent blocks indexed (100 is safe on the smallest Digital Ocean droplet, on my MB Pro M3 MAX, 64Gb Ram, I can do up to 5000 (given that the RPC node does not have a rate limit))    |
 
