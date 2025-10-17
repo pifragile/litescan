@@ -15,10 +15,9 @@ const config =
         : {};
 
 let dbClient, db;
-if(!DEBUG) {
-    dbClient = new MongoClient(process.env.DB_URL, config)
-    db = dbClient.db(process.env.DB_NAME)
-
+if (!DEBUG) {
+    dbClient = new MongoClient(process.env.DB_URL, config);
+    db = dbClient.db(process.env.DB_NAME);
 }
 
 export const RPC_NODE = process.env.RPC_NODE;
@@ -59,8 +58,22 @@ async function insertIntoCollection(collection, document) {
 }
 
 function mapTypes(obj) {
-    if (!isNaN(obj)) return Number(obj);
+    //if (!isNaN(obj)) return Number(obj);
     return obj;
+}
+
+function mapTypesRecursive(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(mapTypesRecursive);
+    } else if (typeof obj === "object" && obj !== null) {
+        return Object.fromEntries(
+            Object.entries(obj).map(([key, value]) => [
+                key,
+                mapTypesRecursive(value),
+            ])
+        );
+    }
+    return mapTypes(obj);
 }
 
 async function parseBlock(
@@ -140,13 +153,7 @@ async function parseBlock(
                 .map((e) => e.toHuman());
 
             events.forEach(async (e, eventIndex) => {
-                if (Array.isArray(e)) {
-                    e.event.data = e.event.data.map(mapTypes);
-                } else if (typeof e === "object") {
-                    Object.keys(e.event.data).forEach(function (key) {
-                        e.event.data[key] = mapTypes(e.event.data[key]);
-                    });
-                }
+                //e.event.data = mapTypesRecursive(e.event.data);
                 e.event.blockNumber = blockNumber;
                 e.event.blockHash = blockHash.toHuman();
                 e.event._id = `${extrinsic._id}-${eventIndex}`;
@@ -168,12 +175,13 @@ async function parseBlock(
             await insertIntoCollection("extrinsics", extrinsic);
         });
         const systemEvents = allRecords
-          .filter(
-            ({ phase }) =>
-              phase.isFinalization || phase.isInitialization
-          )
-          .map((e) => e.toHuman());
+            .filter(
+                ({ phase }) => phase.isFinalization || phase.isInitialization
+            )
+            .map((e) => e.toHuman());
+
         systemEvents.forEach(async (e, eventIndex) => {
+            //e.event.data = mapTypesRecursive(e.event.data);
             e.event.blockNumber = blockNumber;
             e.event.blockHash = blockHash.toHuman();
             e.event._id = `${blockNumber}-${eventIndex}`;
@@ -181,7 +189,7 @@ async function parseBlock(
             e.event.timestamp = block.timestamp;
             delete e.event.index;
             await insertIntoCollection("events", e.event);
-        })
+        });
         await insertIntoCollection("blocks", block);
     } catch (e) {
         throw e;
@@ -215,7 +223,7 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
 }
 
 export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
-    if(DEBUG) return [];
+    if (DEBUG) return [];
     const blocks = db.collection("blocks");
     let processedBlockNumbers = await (
         await blocks
