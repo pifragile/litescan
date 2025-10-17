@@ -20,6 +20,14 @@ if (!DEBUG) {
     db = dbClient.db(process.env.DB_NAME);
 }
 
+// Insertion buffer used to collect documents during concurrent parsing
+// and flush them in bulk via insertMany to improve performance.
+const insertionBuffer = {
+    blocks: [],
+    events: [],
+    extrinsics: [],
+};
+
 export const RPC_NODE = process.env.RPC_NODE;
 
 export const NUM_CONCURRENT_JOBS = parseInt(process.env.NUM_CONCURRENT_JOBS);
@@ -35,7 +43,14 @@ export async function getLastProcessedBlockNumber() {
     }
 }
 
-async function insertIntoCollection(collection, document) {
+async function insertIntoCollection(collection, document, buffer = false) {
+    if (buffer) {
+        // push into the in-memory buffer for later bulk insert
+        insertionBuffer[collection] = insertionBuffer[collection] || [];
+        insertionBuffer[collection].push(document);
+        return;
+    }
+
     if (DEBUG) {
         console.log(
             `Inserting document into collection ${collection}: ${JSON.stringify(
@@ -44,6 +59,8 @@ async function insertIntoCollection(collection, document) {
         );
         return;
     }
+
+    // Default behavior: immediate insertOne
     try {
         await db.collection(collection).insertOne(document);
     } catch (e) {
@@ -54,6 +71,38 @@ async function insertIntoCollection(collection, document) {
             return;
         }
         throw e;
+    }
+}
+
+// NOTE: insertBuffered removed. Use `insertIntoCollection(collection, document, buffer)`
+// to either buffer documents for later bulk insert or write immediately.
+
+async function flushInsertBuffer() {
+    if (DEBUG) return;
+    if (!db) return;
+
+    const collections = Object.keys(insertionBuffer);
+    for (const coll of collections) {
+        const docs = insertionBuffer[coll];
+        if (!docs || docs.length === 0) continue;
+        try {
+            await db.collection(coll).insertMany(docs, { ordered: false });
+        } catch (e) {
+            // ignore duplicate key errors from bulk writes; log others
+            const msg = e.message || "";
+            if (msg.includes("duplicate key") || msg.includes("E11000")) {
+                console.log(
+                    `Some duplicate keys skipped when inserting into ${coll}`
+                );
+            } else {
+                console.error(
+                    `Error during insertMany into ${coll}: ${e.message}`
+                );
+                throw e;
+            }
+        } finally {
+            insertionBuffer[coll] = [];
+        }
     }
 }
 
@@ -79,7 +128,8 @@ function mapTypesRecursive(obj) {
 async function parseBlock(
     blockNumber,
     api = null,
-    swallowNonExistingBlocks = false
+    swallowNonExistingBlocks = false,
+    bufferInserts = false
 ) {
     try {
         if (!api) {
@@ -119,7 +169,12 @@ async function parseBlock(
             specversion: apiAt.runtimeVersion.specVersion.toNumber(),
         };
 
-        signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
+        for (
+            let extrinsicIndex = 0;
+            extrinsicIndex < signedBlock.block.extrinsics.length;
+            extrinsicIndex++
+        ) {
+            const ex = signedBlock.block.extrinsics[extrinsicIndex];
             let extrinsic = ex.toHuman();
             extrinsic.success = false;
             extrinsic.blockNumber = blockNumber;
@@ -132,7 +187,8 @@ async function parseBlock(
                     extrinsic.method.args[key]
                 );
             });
-            if (["setValidationData"].includes(extrinsic.method.method)) return;
+            if (["setValidationData"].includes(extrinsic.method.method))
+                continue;
             if (
                 extrinsic.method.section === "timestamp" &&
                 extrinsic.method.method === "set"
@@ -140,7 +196,7 @@ async function parseBlock(
                 block.timestamp = parseInt(
                     extrinsic.method.args.now.replaceAll(",", "")
                 );
-                return;
+                continue;
             }
 
             extrinsic.timestamp = block.timestamp;
@@ -152,7 +208,8 @@ async function parseBlock(
                 )
                 .map((e) => e.toHuman());
 
-            events.forEach(async (e, eventIndex) => {
+            for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+                const e = events[eventIndex];
                 //e.event.data = mapTypesRecursive(e.event.data);
                 e.event.blockNumber = blockNumber;
                 e.event.blockHash = blockHash.toHuman();
@@ -160,27 +217,32 @@ async function parseBlock(
                 e.event.extrinsicId = extrinsic._id;
                 e.event.timestamp = block.timestamp;
                 delete e.event.index;
-            });
+            }
 
-            events.forEach(async (e) => {
+            for (const e of events) {
                 if (e.event.method === "ExtrinsicSuccess") {
                     extrinsic.success = true;
-                    return;
+                    continue;
                 }
-                await insertIntoCollection("events", e.event);
-            });
+                await insertIntoCollection("events", e.event, bufferInserts);
+            }
 
             extrinsic = { ...extrinsic, ...extrinsic.method };
 
-            await insertIntoCollection("extrinsics", extrinsic);
-        });
+            await insertIntoCollection("extrinsics", extrinsic, bufferInserts);
+        }
         const systemEvents = allRecords
             .filter(
                 ({ phase }) => phase.isFinalization || phase.isInitialization
             )
             .map((e) => e.toHuman());
 
-        systemEvents.forEach(async (e, eventIndex) => {
+        for (
+            let eventIndex = 0;
+            eventIndex < systemEvents.length;
+            eventIndex++
+        ) {
+            const e = systemEvents[eventIndex];
             //e.event.data = mapTypesRecursive(e.event.data);
             e.event.blockNumber = blockNumber;
             e.event.blockHash = blockHash.toHuman();
@@ -188,9 +250,9 @@ async function parseBlock(
             e.event.extrinsicId = null;
             e.event.timestamp = block.timestamp;
             delete e.event.index;
-            await insertIntoCollection("events", e.event);
-        });
-        await insertIntoCollection("blocks", block);
+            await insertIntoCollection("events", e.event, bufferInserts);
+        }
+        await insertIntoCollection("blocks", block, bufferInserts);
     } catch (e) {
         throw e;
     }
@@ -210,7 +272,12 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
 
         while (true) {
             try {
-                await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
+                // buffer inserts during the batch so we can do insertMany
+                await Promise.all(
+                    indexes.map((idx) => parseBlock(idx, api, false, true))
+                );
+                // flush buffered docs in bulk
+                await flushInsertBuffer();
                 break;
             } catch (e) {
                 console.log(e);
