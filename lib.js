@@ -413,7 +413,7 @@ export async function main() {
         await catchUpWithChain(
             api,
             Math.max(
-                lastProcessedBlockNumber - 2 * NUM_CONCURRENT_JOBS,
+                lastProcessedBlockNumber - 2 * NUM_CONCURRENT_JOBS + 1,
                 START_BLOCK
             ),
             currentBlockNumber
