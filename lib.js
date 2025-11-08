@@ -275,10 +275,10 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
             try {
                 // buffer inserts during the batch so we can do insertMany
                 await Promise.all(
-                    indexes.map((idx) => parseBlock(idx, api, false, true))
+                    indexes.map((idx) => parseBlock(idx, api, false, false))
                 );
                 // flush buffered docs in bulk
-                await flushInsertBuffer();
+                //await flushInsertBuffer();
                 break;
             } catch (e) {
                 console.log(e);
