@@ -86,6 +86,7 @@ async function flushInsertBuffer() {
         const docs = insertionBuffer[coll];
         if (!docs || docs.length === 0) continue;
         try {
+            console.log(`Inserting ${docs.length} documents into collection ${coll}`);
             await db.collection(coll).insertMany(docs, { ordered: false });
         } catch (e) {
             // ignore duplicate key errors from bulk writes; log others
@@ -95,7 +96,7 @@ async function flushInsertBuffer() {
                     `Some duplicate keys skipped when inserting into ${coll}`
                 );
             } else {
-                console.error(
+                console.log(
                     `Error during insertMany into ${coll}: ${e.message}`
                 );
                 throw e;
