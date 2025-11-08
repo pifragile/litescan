@@ -50,7 +50,7 @@ Example of the data indexed for an extrinsic:
 We provide a `docker-compose.yml` that sets up a MongoDB instance with a web interface and runs the indexer for Polkadot starting at block 21000000.
 
 Simply run:\
-`docker-compose up --attach indexer`
+`docker compose up --attach indexer`
 
 Now you have the indexer up and running and you get a simple web interface to interact with the DB.
 
