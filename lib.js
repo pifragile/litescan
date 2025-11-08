@@ -119,14 +119,14 @@ async function parseBlock(
             specversion: apiAt.runtimeVersion.specVersion.toNumber(),
         };
 
-        signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
+        // Collect promises for all extrinsics and their events
+        const extrinsicPromises = signedBlock.block.extrinsics.map(async (ex, extrinsicIndex) => {
             let extrinsic = ex.toHuman();
             extrinsic.success = false;
             extrinsic.blockNumber = blockNumber;
             extrinsic.blockHash = blockHash.toHuman();
             extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
 
-            //delete extrinsic.method
             Object.keys(extrinsic.method.args).forEach(function (key) {
                 extrinsic.method.args[key] = mapTypes(
                     extrinsic.method.args[key]
@@ -152,8 +152,8 @@ async function parseBlock(
                 )
                 .map((e) => e.toHuman());
 
-            events.forEach(async (e, eventIndex) => {
-                //e.event.data = mapTypesRecursive(e.event.data);
+            // Prepare event objects
+            events.forEach((e, eventIndex) => {
                 e.event.blockNumber = blockNumber;
                 e.event.blockHash = blockHash.toHuman();
                 e.event._id = `${extrinsic._id}-${eventIndex}`;
@@ -162,26 +162,27 @@ async function parseBlock(
                 delete e.event.index;
             });
 
-            events.forEach(async (e) => {
+            // Insert all events for this extrinsic
+            await Promise.all(events.map(async (e) => {
                 if (e.event.method === "ExtrinsicSuccess") {
                     extrinsic.success = true;
                     return;
                 }
                 await insertIntoCollection("events", e.event);
-            });
+            }));
 
             extrinsic = { ...extrinsic, ...extrinsic.method };
-
             await insertIntoCollection("extrinsics", extrinsic);
         });
+        await Promise.all(extrinsicPromises);
         const systemEvents = allRecords
             .filter(
                 ({ phase }) => phase.isFinalization || phase.isInitialization
             )
             .map((e) => e.toHuman());
 
-        systemEvents.forEach(async (e, eventIndex) => {
-            //e.event.data = mapTypesRecursive(e.event.data);
+        // Insert all system events
+        await Promise.all(systemEvents.map(async (e, eventIndex) => {
             e.event.blockNumber = blockNumber;
             e.event.blockHash = blockHash.toHuman();
             e.event._id = `${blockNumber}-${eventIndex}`;
@@ -189,7 +190,7 @@ async function parseBlock(
             e.event.timestamp = block.timestamp;
             delete e.event.index;
             await insertIntoCollection("events", e.event);
-        });
+        }));
         await insertIntoCollection("blocks", block);
     } catch (e) {
         throw e;
