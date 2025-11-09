@@ -388,7 +388,7 @@ export async function main() {
     console.log("Finding unprocessed blocks and process...");
     const unprocessedBlockNumbers = await findAllUnprocessedBlockNumbers();
     console.log(
-        `Found ${unprocessedBlockNumbers.length} unprocessed blocks: ${unprocessedBlockNumbers}`
+        `Found ${unprocessedBlockNumbers.length} unprocessed blocks.`
     );
 
     if (unprocessedBlockNumbers.length > 0) {
