@@ -387,17 +387,13 @@ export async function main() {
 
     console.log("Finding unprocessed blocks and process...");
     const unprocessedBlockNumbers = await findAllUnprocessedBlockNumbers();
-    console.log(
-        `Found ${unprocessedBlockNumbers.length} unprocessed blocks.`
-    );
+    console.log(`Found ${unprocessedBlockNumbers.length} unprocessed blocks.`);
 
     if (unprocessedBlockNumbers.length > 0) {
         const batchSize = NUM_CONCURRENT_JOBS || 1;
         for (let i = 0; i < unprocessedBlockNumbers.length; i += batchSize) {
             const batch = unprocessedBlockNumbers.slice(i, i + batchSize);
-            const msg = `processing unprocessed blocks ${batch[0]} - ${
-                batch[batch.length - 1]
-            }`;
+            const msg = `processing unprocessed blocks ${batch}`;
             console.time(msg);
             await Promise.all(batch.map((idx) => parseBlock(idx, api)));
             console.timeEnd(msg);
