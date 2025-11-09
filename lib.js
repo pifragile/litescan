@@ -303,7 +303,7 @@ async function catchUpAndIndexLive(api) {
     // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let firstRun = true;
-    let lastCheckAtHeight = lastProcessedBlockNumber
+    let lastCheckAtHeight = lastProcessedBlockNumber;
     await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
         const currentBlockNumber = parseInt(header.number.toString());
         if (firstRun) {
@@ -334,13 +334,10 @@ async function catchUpAndIndexLive(api) {
         }
         console.log(`Processed block ${currentBlockNumber}`);
 
-        if (currentBlockNumber - lastCheckAtHeight >= 10)
-            parseUnprocessedBlocks(
-                api,
-                lastCheckAtHeight,
-                currentBlockNumber
-            );
+        if (currentBlockNumber - lastCheckAtHeight >= 10) {
+            parseUnprocessedBlocks(api, lastCheckAtHeight, currentBlockNumber);
             lastCheckAtHeight = currentBlockNumber;
+        }
     });
 }
 
