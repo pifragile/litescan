@@ -386,9 +386,19 @@ export async function main() {
     console.log(
         `Found ${unprocessedBlockNumbers.length} unprocessed blocks: ${unprocessedBlockNumbers}`
     );
-    await Promise.all(
-        unprocessedBlockNumbers.map((idx) => parseBlock(idx, api))
-    );
+
+    if (unprocessedBlockNumbers.length > 0) {
+        const batchSize = NUM_CONCURRENT_JOBS || 1;
+        for (let i = 0; i < unprocessedBlockNumbers.length; i += batchSize) {
+            const batch = unprocessedBlockNumbers.slice(i, i + batchSize);
+            const msg = `processing unprocessed blocks ${batch[0]} - ${
+                batch[batch.length - 1]
+            }`;
+            console.time(msg);
+            await Promise.all(batch.map((idx) => parseBlock(idx, api)));
+            console.timeEnd(msg);
+        }
+    }
     if (unprocessedBlockNumbers.length > 0) {
         console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
     }
