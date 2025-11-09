@@ -120,60 +120,65 @@ async function parseBlock(
         };
 
         // Collect promises for all extrinsics and their events
-        const extrinsicPromises = signedBlock.block.extrinsics.map(async (ex, extrinsicIndex) => {
-            let extrinsic = ex.toHuman();
-            extrinsic.success = false;
-            extrinsic.blockNumber = blockNumber;
-            extrinsic.blockHash = blockHash.toHuman();
-            extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
+        const extrinsicPromises = signedBlock.block.extrinsics.map(
+            async (ex, extrinsicIndex) => {
+                let extrinsic = ex.toHuman();
+                extrinsic.success = false;
+                extrinsic.blockNumber = blockNumber;
+                extrinsic.blockHash = blockHash.toHuman();
+                extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
 
-            Object.keys(extrinsic.method.args).forEach(function (key) {
-                extrinsic.method.args[key] = mapTypes(
-                    extrinsic.method.args[key]
-                );
-            });
-            if (["setValidationData"].includes(extrinsic.method.method)) return;
-            if (
-                extrinsic.method.section === "timestamp" &&
-                extrinsic.method.method === "set"
-            ) {
-                block.timestamp = parseInt(
-                    extrinsic.method.args.now.replaceAll(",", "")
-                );
-                return;
-            }
-
-            extrinsic.timestamp = block.timestamp;
-            const events = allRecords
-                .filter(
-                    ({ phase }) =>
-                        phase.isApplyExtrinsic &&
-                        phase.asApplyExtrinsic.eq(extrinsicIndex)
-                )
-                .map((e) => e.toHuman());
-
-            // Prepare event objects
-            events.forEach((e, eventIndex) => {
-                e.event.blockNumber = blockNumber;
-                e.event.blockHash = blockHash.toHuman();
-                e.event._id = `${extrinsic._id}-${eventIndex}`;
-                e.event.extrinsicId = extrinsic._id;
-                e.event.timestamp = block.timestamp;
-                delete e.event.index;
-            });
-
-            // Insert all events for this extrinsic
-            await Promise.all(events.map(async (e) => {
-                if (e.event.method === "ExtrinsicSuccess") {
-                    extrinsic.success = true;
+                Object.keys(extrinsic.method.args).forEach(function (key) {
+                    extrinsic.method.args[key] = mapTypes(
+                        extrinsic.method.args[key]
+                    );
+                });
+                if (["setValidationData"].includes(extrinsic.method.method))
+                    return;
+                if (
+                    extrinsic.method.section === "timestamp" &&
+                    extrinsic.method.method === "set"
+                ) {
+                    block.timestamp = parseInt(
+                        extrinsic.method.args.now.replaceAll(",", "")
+                    );
                     return;
                 }
-                await insertIntoCollection("events", e.event);
-            }));
 
-            extrinsic = { ...extrinsic, ...extrinsic.method };
-            await insertIntoCollection("extrinsics", extrinsic);
-        });
+                extrinsic.timestamp = block.timestamp;
+                const events = allRecords
+                    .filter(
+                        ({ phase }) =>
+                            phase.isApplyExtrinsic &&
+                            phase.asApplyExtrinsic.eq(extrinsicIndex)
+                    )
+                    .map((e) => e.toHuman());
+
+                // Prepare event objects
+                events.forEach((e, eventIndex) => {
+                    e.event.blockNumber = blockNumber;
+                    e.event.blockHash = blockHash.toHuman();
+                    e.event._id = `${extrinsic._id}-${eventIndex}`;
+                    e.event.extrinsicId = extrinsic._id;
+                    e.event.timestamp = block.timestamp;
+                    delete e.event.index;
+                });
+
+                // Insert all events for this extrinsic
+                await Promise.all(
+                    events.map(async (e) => {
+                        if (e.event.method === "ExtrinsicSuccess") {
+                            extrinsic.success = true;
+                            return;
+                        }
+                        await insertIntoCollection("events", e.event);
+                    })
+                );
+
+                extrinsic = { ...extrinsic, ...extrinsic.method };
+                await insertIntoCollection("extrinsics", extrinsic);
+            }
+        );
         await Promise.all(extrinsicPromises);
         const systemEvents = allRecords
             .filter(
@@ -182,15 +187,17 @@ async function parseBlock(
             .map((e) => e.toHuman());
 
         // Insert all system events
-        await Promise.all(systemEvents.map(async (e, eventIndex) => {
-            e.event.blockNumber = blockNumber;
-            e.event.blockHash = blockHash.toHuman();
-            e.event._id = `${blockNumber}-${eventIndex}`;
-            e.event.extrinsicId = null;
-            e.event.timestamp = block.timestamp;
-            delete e.event.index;
-            await insertIntoCollection("events", e.event);
-        }));
+        await Promise.all(
+            systemEvents.map(async (e, eventIndex) => {
+                e.event.blockNumber = blockNumber;
+                e.event.blockHash = blockHash.toHuman();
+                e.event._id = `${blockNumber}-${eventIndex}`;
+                e.event.extrinsicId = null;
+                e.event.timestamp = block.timestamp;
+                delete e.event.index;
+                await insertIntoCollection("events", e.event);
+            })
+        );
         await insertIntoCollection("blocks", block);
     } catch (e) {
         throw e;
@@ -254,10 +261,49 @@ export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
     }
 }
 
+export async function findAllUnprocessedBlockNumbers() {
+    const coll = db.collection("blocks");
+
+    // Stream documents sorted by height
+    const cursor = coll
+        .find({}, { projection: { height: 1, _id: 0 } })
+        .sort({ height: 1 });
+
+    let prevHeight = -1;
+    let totalDocs = 0;
+    const missing = [];
+    const outOfRange = [];
+    let maxHeight = -Infinity;
+    let minHeight = Infinity;
+
+    for await (const doc of cursor) {
+        const h = Number(doc.height);
+        if (Number.isNaN(h)) continue;
+
+        totalDocs++;
+        maxHeight = Math.max(maxHeight, h);
+        minHeight = Math.min(minHeight, h);
+
+        if (h < 0) outOfRange.push(h);
+
+        // Detect missing heights
+        if (h > prevHeight + 1) {
+            // Missing some between prevHeight and h
+            for (let m = prevHeight + 1; m < h; m++) {
+                missing.push(m);
+            }
+        }
+        prevHeight = h;
+    }
+
+    return missing;
+}
+
 async function catchUpAndIndexLive(api) {
     // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let firstRun = true;
+    let lastCheckAtHeight = lastProcessedBlockNumber
     await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
         const currentBlockNumber = parseInt(header.number.toString());
         if (firstRun) {
@@ -288,12 +334,13 @@ async function catchUpAndIndexLive(api) {
         }
         console.log(`Processed block ${currentBlockNumber}`);
 
-        if (currentBlockNumber % 5 === 0)
+        if (currentBlockNumber - lastCheckAtHeight >= 10)
             parseUnprocessedBlocks(
                 api,
-                currentBlockNumber - 20,
+                lastCheckAtHeight,
                 currentBlockNumber
             );
+            lastCheckAtHeight = currentBlockNumber;
     });
 }
 
@@ -336,6 +383,18 @@ export async function main() {
     const api = await ApiPromise.create({
         provider: wsProvider,
     });
+
+    console.log("Finding unprocessed blocks and process...");
+    const unprocessedBlockNumbers = await findAllUnprocessedBlockNumbers();
+    console.log(
+        `Found ${unprocessedBlockNumbers.length} unprocessed blocks: ${unprocessedBlockNumbers}`
+    );
+    await Promise.all(
+        unprocessedBlockNumbers.map((idx) => parseBlock(idx, api))
+    );
+    if (unprocessedBlockNumbers.length > 0) {
+        console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
+    }
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let currentBlockNumber = await getLastestFinalizedBlockNumber(api);
