@@ -335,7 +335,11 @@ async function catchUpAndIndexLive(api) {
         console.log(`Processed block ${currentBlockNumber}`);
 
         if (currentBlockNumber - lastCheckAtHeight >= 10) {
-            await parseUnprocessedBlocks(api, lastCheckAtHeight, currentBlockNumber);
+            await parseUnprocessedBlocks(
+                api,
+                lastCheckAtHeight,
+                currentBlockNumber
+            );
             lastCheckAtHeight = currentBlockNumber;
         }
     });
@@ -398,7 +402,7 @@ export async function main() {
             await Promise.all(batch.map((idx) => parseBlock(idx, api)));
             console.timeEnd(msg);
         }
-                console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
+        console.log(`done parsing ${unprocessedBlockNumbers.length} blocks`);
     }
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
