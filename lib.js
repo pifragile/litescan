@@ -398,9 +398,7 @@ export async function main() {
             await Promise.all(batch.map((idx) => parseBlock(idx, api)));
             console.timeEnd(msg);
         }
-    }
-    if (unprocessedBlockNumbers.length > 0) {
-        console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
+                console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
     }
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
