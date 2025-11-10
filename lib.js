@@ -253,11 +253,9 @@ export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
         blockNumber,
         endBlockNumber
     );
-    await Promise.all(
-        unprocessedBlockNumbers.map((idx) => parseBlock(idx, api))
-    );
     if (unprocessedBlockNumbers.length > 0) {
-        console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
+        console.log("Found some unprocessed blocks:", unprocessedBlockNumbers);
+        await batchProcessBlocks(api, unprocessedBlockNumbers);
     }
 }
 
@@ -299,6 +297,19 @@ export async function findAllUnprocessedBlockNumbers() {
     return missing;
 }
 
+export async function batchProcessBlocks(api, blockNumbers) {
+    if (blockNumbers.length > 0) {
+        const batchSize = NUM_CONCURRENT_JOBS || 1;
+        for (let i = 0; i < blockNumbers.length; i += batchSize) {
+            const batch = blockNumbers.slice(i, i + batchSize);
+            const msg = `processing blocks ${batch}`;
+            console.time(msg);
+            await Promise.all(batch.map((idx) => parseBlock(idx, api)));
+            console.timeEnd(msg);
+        }
+    }
+}
+
 async function catchUpAndIndexLive(api) {
     // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
@@ -322,9 +333,20 @@ async function catchUpAndIndexLive(api) {
         }
 
         console.log(`Chain is at block: #${currentBlockNumber}`);
+
         while (true) {
             try {
-                await parseBlock(currentBlockNumber, api);
+                const start = lastProcessedBlockNumber + 1;
+                const end = currentBlockNumber;
+                if (start <= end) {
+                    const blockNumbers = Array.from(
+                        { length: end - start + 1 },
+                        (_, i) => start + i
+                    );
+                    await batchProcessBlocks(api, blockNumbers);
+                }
+
+                lastProcessedBlockNumber = currentBlockNumber;
                 break;
             } catch (e) {
                 console.log(e);
@@ -389,17 +411,7 @@ export async function main() {
     const unprocessedBlockNumbers = await findAllUnprocessedBlockNumbers();
     console.log(`Found ${unprocessedBlockNumbers.length} unprocessed blocks.`);
 
-    if (unprocessedBlockNumbers.length > 0) {
-        const batchSize = NUM_CONCURRENT_JOBS || 1;
-        for (let i = 0; i < unprocessedBlockNumbers.length; i += batchSize) {
-            const batch = unprocessedBlockNumbers.slice(i, i + batchSize);
-            const msg = `processing unprocessed blocks ${batch}`;
-            console.time(msg);
-            await Promise.all(batch.map((idx) => parseBlock(idx, api)));
-            console.timeEnd(msg);
-        }
-        console.log(`done parsing ${unprocessedBlockNumbers.length} blocks`);
-    }
+    await batchProcessBlocks(api, unprocessedBlockNumbers);
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let currentBlockNumber = await getLastestFinalizedBlockNumber(api);
