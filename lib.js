@@ -354,7 +354,6 @@ async function catchUpAndIndexLive(api) {
                 continue;
             }
         }
-        console.log(`Processed block ${currentBlockNumber}`);
 
         if (currentBlockNumber - lastCheckAtHeight >= 10) {
             await parseUnprocessedBlocks(
