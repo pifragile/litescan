@@ -21,10 +21,9 @@ const config =
         : {};
 
 let dbClient, db;
-if(!DEBUG) {
-    dbClient = new MongoClient(process.env.DB_URL, config)
-    db = dbClient.db(process.env.DB_NAME)
-
+if (!DEBUG) {
+    dbClient = new MongoClient(process.env.DB_URL, config);
+    db = dbClient.db(process.env.DB_NAME);
 }
 
 export const RPC_NODE = process.env.RPC_NODE;
@@ -100,6 +99,20 @@ const print = (obj) => {
     );
 };
 
+function mapTypesRecursive(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(mapTypesRecursive);
+    } else if (typeof obj === "object" && obj !== null) {
+        return Object.fromEntries(
+            Object.entries(obj).map(([key, value]) => [
+                key,
+                mapTypesRecursive(value),
+            ])
+        );
+    }
+    return mapTypes(obj);
+}
+
 async function parseBlock(
     blockNumber,
     api = null,
@@ -143,6 +156,7 @@ async function parseBlock(
             timestamp: null,
             specVersion: apiAt.runtimeVersion.specVersion.toNumber(),
             author: await getBlockAuthor(apiAt, blockNumber),
+            specversion: apiAt.runtimeVersion.specVersion.toNumber(),
         };
 
         let [cindex, phase, nextPhaseTimestamp, reputationLifetime] =
@@ -168,7 +182,6 @@ async function parseBlock(
             extrinsic.blockHash = blockHash.toHuman();
             extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
 
-            //delete extrinsic.method
             Object.keys(extrinsic.method.args).forEach(function (key) {
                 extrinsic.method.args[key] = mapTypes(
                     extrinsic.method.args[key]
@@ -194,14 +207,8 @@ async function parseBlock(
                 )
                 .map((e) => e.toHuman());
 
-            events.forEach(async (e, eventIndex) => {
-                if (Array.isArray(e)) {
-                    e.event.data = e.event.data.map(mapTypes);
-                } else if (typeof e === "object") {
-                    Object.keys(e.event.data).forEach(function (key) {
-                        e.event.data[key] = mapTypes(e.event.data[key]);
-                    });
-                }
+            // Prepare event objects
+            events.forEach((e, eventIndex) => {
                 e.event.blockNumber = blockNumber;
                 e.event.blockHash = blockHash.toHuman();
                 e.event._id = `${extrinsic._id}-${eventIndex}`;
@@ -210,33 +217,39 @@ async function parseBlock(
                 delete e.event.index;
             });
 
-            events.forEach(async (e) => {
-                if (e.event.method === "ExtrinsicSuccess") {
-                    extrinsic.success = true;
-                    return;
-                }
-                await insertIntoCollection("events", e.event);
-            });
+            // Insert all events for this extrinsic
+            await Promise.all(
+                events.map(async (e) => {
+                    if (e.event.method === "ExtrinsicSuccess") {
+                        extrinsic.success = true;
+                        return;
+                    }
+                    await insertIntoCollection("events", e.event);
+                })
+            );
 
             extrinsic = { ...extrinsic, ...extrinsic.method };
-
             await insertIntoCollection("extrinsics", extrinsic);
         });
+        await Promise.all(extrinsicPromises);
         const systemEvents = allRecords
-          .filter(
-            ({ phase }) =>
-              phase.isFinalization || phase.isInitialization
-          )
-          .map((e) => e.toHuman());
-        systemEvents.forEach(async (e, eventIndex) => {
-            e.event.blockNumber = blockNumber;
-            e.event.blockHash = blockHash.toHuman();
-            e.event._id = `${blockNumber}-${eventIndex}`;
-            e.event.extrinsicId = null;
-            e.event.timestamp = block.timestamp;
-            delete e.event.index;
-            await insertIntoCollection("events", e.event);
-        })
+            .filter(
+                ({ phase }) => phase.isFinalization || phase.isInitialization
+            )
+            .map((e) => e.toHuman());
+
+        // Insert all system events
+        await Promise.all(
+            systemEvents.map(async (e, eventIndex) => {
+                e.event.blockNumber = blockNumber;
+                e.event.blockHash = blockHash.toHuman();
+                e.event._id = `${blockNumber}-${eventIndex}`;
+                e.event.extrinsicId = null;
+                e.event.timestamp = block.timestamp;
+                delete e.event.index;
+                await insertIntoCollection("events", e.event);
+            })
+        );
 
         await insertIntoCollection("blocks", block);
     } catch (e) {
@@ -277,7 +290,7 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
 }
 
 export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
-    if(DEBUG) return [];
+    if (DEBUG) return [];
     const blocks = db.collection("blocks");
     let processedBlockNumbers = await (
         await blocks
@@ -299,11 +312,60 @@ export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
         blockNumber,
         endBlockNumber
     );
-    await Promise.all(
-        unprocessedBlockNumbers.map((idx) => parseBlock(idx, api))
-    );
     if (unprocessedBlockNumbers.length > 0) {
-        console.log(`done parsing blocks ${unprocessedBlockNumbers}`);
+        console.log("Found some unprocessed blocks:", unprocessedBlockNumbers);
+        await batchProcessBlocks(api, unprocessedBlockNumbers);
+    }
+}
+
+export async function findAllUnprocessedBlockNumbers() {
+    const coll = db.collection("blocks");
+
+    // Stream documents sorted by height
+    const cursor = coll
+        .find({}, { projection: { height: 1, _id: 0 } })
+        .sort({ height: 1 });
+
+    let prevHeight = -1;
+    let totalDocs = 0;
+    const missing = [];
+    const outOfRange = [];
+    let maxHeight = -Infinity;
+    let minHeight = Infinity;
+
+    for await (const doc of cursor) {
+        const h = Number(doc.height);
+        if (Number.isNaN(h)) continue;
+
+        totalDocs++;
+        maxHeight = Math.max(maxHeight, h);
+        minHeight = Math.min(minHeight, h);
+
+        if (h < 0) outOfRange.push(h);
+
+        // Detect missing heights
+        if (h > prevHeight + 1) {
+            // Missing some between prevHeight and h
+            for (let m = prevHeight + 1; m < h; m++) {
+                missing.push(m);
+            }
+        }
+        prevHeight = h;
+    }
+
+    return missing;
+}
+
+export async function batchProcessBlocks(api, blockNumbers) {
+    if (blockNumbers.length > 0) {
+        const batchSize = NUM_CONCURRENT_JOBS || 1;
+        for (let i = 0; i < blockNumbers.length; i += batchSize) {
+            const batch = blockNumbers.slice(i, i + batchSize);
+            const msg = `processing blocks ${batch}`;
+            console.time(msg);
+            await Promise.all(batch.map((idx) => parseBlock(idx, api)));
+            console.timeEnd(msg);
+        }
     }
 }
 
@@ -311,6 +373,7 @@ async function catchUpAndIndexLive(api) {
     // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let firstRun = true;
+    let lastCheckAtHeight = lastProcessedBlockNumber;
     await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
         const currentBlockNumber = parseInt(header.number.toString());
         if (firstRun) {
@@ -329,9 +392,20 @@ async function catchUpAndIndexLive(api) {
         }
 
         console.log(`Chain is at block: #${currentBlockNumber}`);
+
         while (true) {
             try {
-                await parseBlock(currentBlockNumber, api);
+                const start = lastProcessedBlockNumber + 1;
+                const end = currentBlockNumber;
+                if (start <= end) {
+                    const blockNumbers = Array.from(
+                        { length: end - start + 1 },
+                        (_, i) => start + i
+                    );
+                    await batchProcessBlocks(api, blockNumbers);
+                }
+
+                lastProcessedBlockNumber = currentBlockNumber;
                 break;
             } catch (e) {
                 console.log(e);
@@ -339,14 +413,15 @@ async function catchUpAndIndexLive(api) {
                 continue;
             }
         }
-        console.log(`Processed block ${currentBlockNumber}`);
 
-        if (currentBlockNumber % 5 === 0)
-            parseUnprocessedBlocks(
+        if (currentBlockNumber - lastCheckAtHeight >= 10) {
+            await parseUnprocessedBlocks(
                 api,
-                currentBlockNumber - 20,
+                lastCheckAtHeight,
                 currentBlockNumber
             );
+            lastCheckAtHeight = currentBlockNumber;
+        }
     });
 }
 
@@ -391,6 +466,12 @@ export async function main() {
         signedExtensions: typesBundle.signedExtensions,
         types: typesBundle.types[0].types,
     });
+
+    console.log("Finding unprocessed blocks and process...");
+    const unprocessedBlockNumbers = await findAllUnprocessedBlockNumbers();
+    console.log(`Found ${unprocessedBlockNumbers.length} unprocessed blocks.`);
+
+    await batchProcessBlocks(api, unprocessedBlockNumbers);
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let currentBlockNumber = await getLastestFinalizedBlockNumber(api);

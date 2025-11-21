@@ -1,8 +1,16 @@
 import { MongoClient } from "mongodb";
 
-const dbClient = new MongoClient("mongodb://root:example@localhost:27017/", {});
-const indexer = dbClient.db("indexer");
-const extrinsics = indexer.collection("extrinsics");
-const query = { method: "transferAllowDeath", section: "balances" };
-const result = await extrinsics.find(query, { limit: 3 });
-console.log(await result.toArray());
+(async () => {
+    const dbClient = new MongoClient("mongodb://readonly:123456@62.84.182.186:27017/", {});
+    try {
+        await dbClient.connect();
+        const indexer = dbClient.db("litescan_polkadot_assethub");
+        const extrinsics = indexer.collection("extrinsics");
+        const query = { method: "transferAllowDeath", section: "balances" };
+        const result = await extrinsics.find(query, { limit: 3 });
+        const docs = await result.toArray();
+        console.dir(docs, { depth: null, colors: true });
+    } finally {
+        await dbClient.close();
+    }
+})();
