@@ -172,66 +172,67 @@ async function parseBlock(
         block.nextPhaseTimestamp = parseInt(nextPhaseTimestamp.toString());
         block.reputationLifetime = parseInt(reputationLifetime.toString());
 
-        // the information for each of the contained extrinsics
-        signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
-            // the extrinsics are decoded by the API, human-like view
+        const extrinsicPromises = signedBlock.block.extrinsics.map(
+            async (ex, extrinsicIndex) => {
+                let extrinsic = ex.toHuman();
+                extrinsic.success = false;
+                extrinsic.blockNumber = blockNumber;
+                extrinsic.blockHash = blockHash.toHuman();
+                extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
 
-            let extrinsic = ex.toHuman();
-            extrinsic.success = false;
-            extrinsic.blockNumber = blockNumber;
-            extrinsic.blockHash = blockHash.toHuman();
-            extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
+                Object.keys(extrinsic.method.args).forEach(function (key) {
+                    extrinsic.method.args[key] = mapTypes(
+                        extrinsic.method.args[key]
+                    );
+                });
+                if (["setValidationData"].includes(extrinsic.method.method))
+                    return;
+                if (
+                    extrinsic.method.section === "timestamp" &&
+                    extrinsic.method.method === "set"
+                ) {
+                    block.timestamp = parseInt(
+                        extrinsic.method.args.now.replaceAll(",", "")
+                    );
+                    return;
+                }
 
-            Object.keys(extrinsic.method.args).forEach(function (key) {
-                extrinsic.method.args[key] = mapTypes(
-                    extrinsic.method.args[key]
+                extrinsic.timestamp = block.timestamp;
+                const events = allRecords
+                    .filter(
+                        ({ phase }) =>
+                            phase.isApplyExtrinsic &&
+                            phase.asApplyExtrinsic.eq(extrinsicIndex)
+                    )
+                    .map((e) => e.toHuman());
+
+                // Prepare event objects
+                events.forEach((e, eventIndex) => {
+                    e.event.blockNumber = blockNumber;
+                    e.event.blockHash = blockHash.toHuman();
+                    e.event._id = `${extrinsic._id}-${eventIndex}`;
+                    e.event.extrinsicId = extrinsic._id;
+                    e.event.timestamp = block.timestamp;
+                    delete e.event.index;
+                });
+
+                // Insert all events for this extrinsic
+                await Promise.all(
+                    events.map(async (e) => {
+                        if (e.event.method === "ExtrinsicSuccess") {
+                            extrinsic.success = true;
+                            return;
+                        }
+                        await insertIntoCollection("events", e.event);
+                    })
                 );
-            });
-            if (["setValidationData"].includes(extrinsic.method.method)) return;
-            if (
-                extrinsic.method.section === "timestamp" &&
-                extrinsic.method.method === "set"
-            ) {
-                block.timestamp = parseInt(
-                    extrinsic.method.args.now.replaceAll(",", "")
-                );
-                return;
+
+                extrinsic = { ...extrinsic, ...extrinsic.method };
+                await insertIntoCollection("extrinsics", extrinsic);
             }
-
-            extrinsic.timestamp = block.timestamp;
-            const events = allRecords
-                .filter(
-                    ({ phase }) =>
-                        phase.isApplyExtrinsic &&
-                        phase.asApplyExtrinsic.eq(extrinsicIndex)
-                )
-                .map((e) => e.toHuman());
-
-            // Prepare event objects
-            events.forEach((e, eventIndex) => {
-                e.event.blockNumber = blockNumber;
-                e.event.blockHash = blockHash.toHuman();
-                e.event._id = `${extrinsic._id}-${eventIndex}`;
-                e.event.extrinsicId = extrinsic._id;
-                e.event.timestamp = block.timestamp;
-                delete e.event.index;
-            });
-
-            // Insert all events for this extrinsic
-            await Promise.all(
-                events.map(async (e) => {
-                    if (e.event.method === "ExtrinsicSuccess") {
-                        extrinsic.success = true;
-                        return;
-                    }
-                    await insertIntoCollection("events", e.event);
-                })
-            );
-
-            extrinsic = { ...extrinsic, ...extrinsic.method };
-            await insertIntoCollection("extrinsics", extrinsic);
-        });
+        );
         await Promise.all(extrinsicPromises);
+        
         const systemEvents = allRecords
             .filter(
                 ({ phase }) => phase.isFinalization || phase.isInitialization
