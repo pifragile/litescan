@@ -262,12 +262,15 @@ export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
 export async function findAllUnprocessedBlockNumbers() {
     const coll = db.collection("blocks");
 
-    // Stream documents sorted by height
+    // Include START_BLOCK itself
     const cursor = coll
-        .find({}, { projection: { height: 1, _id: 0 } })
+        .find(
+            { height: { $gte: START_BLOCK } },  // include START_BLOCK
+            { projection: { height: 1, _id: 0 } }
+        )
         .sort({ height: 1 });
 
-    let prevHeight = -1;
+    let prevHeight = START_BLOCK - 1;  // so missing START_BLOCK is detected
     let totalDocs = 0;
     const missing = [];
     const outOfRange = [];
@@ -284,9 +287,8 @@ export async function findAllUnprocessedBlockNumbers() {
 
         if (h < 0) outOfRange.push(h);
 
-        // Detect missing heights
+        // Detect missing heights starting from START_BLOCK
         if (h > prevHeight + 1) {
-            // Missing some between prevHeight and h
             for (let m = prevHeight + 1; m < h; m++) {
                 missing.push(m);
             }
