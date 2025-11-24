@@ -18,9 +18,8 @@ RPC_NODE=<rpc node url>
 
 ## docker 
 
-```bash
-docker-compose up -d
-docker logs  litescan-indexer-1
+Simply run:\
+`docker compose up --attach indexer`
 
 # cleanup
 docker-compose down
