@@ -208,6 +208,13 @@ async function parseBlock(
 
                 // Prepare event objects
                 events.forEach((e, eventIndex) => {
+                    if (Array.isArray(e)) {
+                        e.event.data = e.event.data.map(mapTypes);
+                    } else if (typeof e === "object") {
+                        Object.keys(e.event.data).forEach(function (key) {
+                            e.event.data[key] = mapTypes(e.event.data[key]);
+                        });
+                    }
                     e.event.blockNumber = blockNumber;
                     e.event.blockHash = blockHash.toHuman();
                     e.event._id = `${extrinsic._id}-${eventIndex}`;
@@ -232,7 +239,7 @@ async function parseBlock(
             }
         );
         await Promise.all(extrinsicPromises);
-        
+
         const systemEvents = allRecords
             .filter(
                 ({ phase }) => phase.isFinalization || phase.isInitialization
@@ -325,12 +332,12 @@ export async function findAllUnprocessedBlockNumbers() {
     // Include START_BLOCK itself
     const cursor = coll
         .find(
-            { height: { $gte: START_BLOCK } },  // include START_BLOCK
+            { height: { $gte: START_BLOCK } }, // include START_BLOCK
             { projection: { height: 1, _id: 0 } }
         )
         .sort({ height: 1 });
 
-    let prevHeight = START_BLOCK - 1;  // so missing START_BLOCK is detected
+    let prevHeight = START_BLOCK - 1; // so missing START_BLOCK is detected
     let totalDocs = 0;
     const missing = [];
     const outOfRange = [];
