@@ -45,7 +45,64 @@ async function insertIntoCollection(collection, document) {
         return;
     }
     try {
-        await db.collection(collection).insertOne(document);
+        try {
+            await db.collection(collection).insertOne(document);
+        } catch (e) {
+            if (
+                e.name === "MongoServerError" &&
+                e.message.includes(
+                    "BSONObj exceeds maximum nested object depth"
+                )
+            ) {
+                // Recursively stringify fields that exceed a safe depth
+                function stringifyDeepFields(
+                    obj,
+                    maxDepth = 50,
+                    currentDepth = 0
+                ) {
+                    if (
+                        currentDepth > maxDepth &&
+                        typeof obj === "object" &&
+                        obj !== null
+                    ) {
+                        return JSON.stringify(obj);
+                    }
+                    if (Array.isArray(obj)) {
+                        return obj.map((item) =>
+                            stringifyDeepFields(
+                                item,
+                                maxDepth,
+                                currentDepth + 1
+                            )
+                        );
+                    }
+                    if (typeof obj === "object" && obj !== null) {
+                        return Object.fromEntries(
+                            Object.entries(obj).map(([k, v]) => [
+                                k,
+                                stringifyDeepFields(
+                                    v,
+                                    maxDepth,
+                                    currentDepth + 1
+                                ),
+                            ])
+                        );
+                    }
+                    return obj;
+                }
+                const safeDoc = stringifyDeepFields(document, 50, 0);
+                try {
+                    await db.collection(collection).insertOne(safeDoc);
+                    console.log(
+                        `Retried insert with stringified deep fields for document ${document._id} in collection ${collection}`
+                    );
+                    return;
+                } catch (err) {
+                    throw err;
+                }
+            }
+            throw e;
+        }
     } catch (e) {
         if (e.message.includes("E11000 duplicate key error")) {
             console.log(
@@ -53,40 +110,6 @@ async function insertIntoCollection(collection, document) {
             );
             return;
         }
-        if (
-            e.name === "MongoServerError" &&
-            e.message.includes("BSONObj exceeds maximum nested object depth")
-        ) {
-            // Recursively stringify fields that exceed a safe depth
-            function stringifyDeepFields(obj, maxDepth = 50, currentDepth = 0) {
-                if (currentDepth > maxDepth && typeof obj === "object" && obj !== null) {
-                    return JSON.stringify(obj);
-                }
-                if (Array.isArray(obj)) {
-                    return obj.map(item => stringifyDeepFields(item, maxDepth, currentDepth + 1));
-                }
-                if (typeof obj === "object" && obj !== null) {
-                    return Object.fromEntries(
-                        Object.entries(obj).map(([k, v]) => [
-                            k,
-                            stringifyDeepFields(v, maxDepth, currentDepth + 1)
-                        ])
-                    );
-                }
-                return obj;
-            }
-            const safeDoc = stringifyDeepFields(document, 50, 0);
-            try {
-                await db.collection(collection).insertOne(safeDoc);
-                console.log(
-                    `Retried insert with stringified deep fields for document ${document._id} in collection ${collection}`
-                );
-                return;
-            } catch (err) {
-                throw err;
-            }
-        }
-        throw e;
     }
 }
 
@@ -298,12 +321,12 @@ export async function findAllUnprocessedBlockNumbers() {
     // Include START_BLOCK itself
     const cursor = coll
         .find(
-            { height: { $gte: START_BLOCK } },  // include START_BLOCK
+            { height: { $gte: START_BLOCK } }, // include START_BLOCK
             { projection: { height: 1, _id: 0 } }
         )
         .sort({ height: 1 });
 
-    let prevHeight = START_BLOCK - 1;  // so missing START_BLOCK is detected
+    let prevHeight = START_BLOCK - 1; // so missing START_BLOCK is detected
     let totalDocs = 0;
     const missing = [];
     const outOfRange = [];
