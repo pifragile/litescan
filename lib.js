@@ -53,6 +53,39 @@ async function insertIntoCollection(collection, document) {
             );
             return;
         }
+        if (
+            e.name === "MongoServerError" &&
+            e.message.includes("BSONObj exceeds maximum nested object depth")
+        ) {
+            // Recursively stringify fields that exceed a safe depth
+            function stringifyDeepFields(obj, maxDepth = 50, currentDepth = 0) {
+                if (currentDepth > maxDepth && typeof obj === "object" && obj !== null) {
+                    return JSON.stringify(obj);
+                }
+                if (Array.isArray(obj)) {
+                    return obj.map(item => stringifyDeepFields(item, maxDepth, currentDepth + 1));
+                }
+                if (typeof obj === "object" && obj !== null) {
+                    return Object.fromEntries(
+                        Object.entries(obj).map(([k, v]) => [
+                            k,
+                            stringifyDeepFields(v, maxDepth, currentDepth + 1)
+                        ])
+                    );
+                }
+                return obj;
+            }
+            const safeDoc = stringifyDeepFields(document, 50, 0);
+            try {
+                await db.collection(collection).insertOne(safeDoc);
+                console.log(
+                    `Retried insert with stringified deep fields for document ${document._id} in collection ${collection}`
+                );
+                return;
+            } catch (err) {
+                throw err;
+            }
+        }
         throw e;
     }
 }
