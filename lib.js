@@ -178,6 +178,7 @@ async function parseBlock(
         // Collect promises for all extrinsics and their events
         const extrinsicPromises = signedBlock.block.extrinsics.map(
             async (ex, extrinsicIndex) => {
+                let skipInsertExtrinsic = false;
                 let extrinsic = ex.toHuman();
                 extrinsic.success = false;
                 extrinsic.blockNumber = blockNumber;
@@ -190,7 +191,7 @@ async function parseBlock(
                     );
                 });
                 if (["setValidationData"].includes(extrinsic.method.method))
-                    return;
+                    skipInsertExtrinsic = true;
                 if (
                     extrinsic.method.section === "timestamp" &&
                     extrinsic.method.method === "set"
@@ -198,7 +199,7 @@ async function parseBlock(
                     block.timestamp = parseInt(
                         extrinsic.method.args.now.replaceAll(",", "")
                     );
-                    return;
+                    skipInsertExtrinsic = true;
                 }
 
                 extrinsic.timestamp = block.timestamp;
@@ -232,7 +233,9 @@ async function parseBlock(
                 );
 
                 extrinsic = { ...extrinsic, ...extrinsic.method };
-                await insertIntoCollection("extrinsics", extrinsic);
+                if (!skipInsertExtrinsic) {
+                    await insertIntoCollection("extrinsics", extrinsic);
+                }
             }
         );
         await Promise.all(extrinsicPromises);
