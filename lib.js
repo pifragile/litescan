@@ -51,7 +51,64 @@ async function insertIntoCollection(collection, document) {
         return;
     }
     try {
-        await db.collection(collection).insertOne(document);
+        try {
+            await db.collection(collection).insertOne(document);
+        } catch (e) {
+            if (
+                e.name === "MongoServerError" &&
+                e.message.includes(
+                    "BSONObj exceeds maximum nested object depth"
+                )
+            ) {
+                // Recursively stringify fields that exceed a safe depth
+                function stringifyDeepFields(
+                    obj,
+                    maxDepth = 50,
+                    currentDepth = 0
+                ) {
+                    if (
+                        currentDepth > maxDepth &&
+                        typeof obj === "object" &&
+                        obj !== null
+                    ) {
+                        return JSON.stringify(obj);
+                    }
+                    if (Array.isArray(obj)) {
+                        return obj.map((item) =>
+                            stringifyDeepFields(
+                                item,
+                                maxDepth,
+                                currentDepth + 1
+                            )
+                        );
+                    }
+                    if (typeof obj === "object" && obj !== null) {
+                        return Object.fromEntries(
+                            Object.entries(obj).map(([k, v]) => [
+                                k,
+                                stringifyDeepFields(
+                                    v,
+                                    maxDepth,
+                                    currentDepth + 1
+                                ),
+                            ])
+                        );
+                    }
+                    return obj;
+                }
+                const safeDoc = stringifyDeepFields(document, 50, 0);
+                try {
+                    await db.collection(collection).insertOne(safeDoc);
+                    console.log(
+                        `Retried insert with stringified deep fields for document ${document._id} in collection ${collection}`
+                    );
+                    return;
+                } catch (err) {
+                    throw err;
+                }
+            }
+            throw e;
+        }
     } catch (e) {
         if (e.message.includes("E11000 duplicate key error")) {
             console.log(
@@ -59,7 +116,6 @@ async function insertIntoCollection(collection, document) {
             );
             return;
         }
-        throw e;
     }
 }
 const cidToString = (input) => {
@@ -95,7 +151,7 @@ function mapTypes(obj) {
 
 const print = (obj) => {
     console.log(
-        util.inspect(obj, { showHidden: false, depth: null, colors: true })
+        util.inspect(obj, { showHidden: false, depth: null, colors: true }),
     );
 };
 
@@ -107,7 +163,7 @@ function mapTypesRecursive(obj) {
             Object.entries(obj).map(([key, value]) => [
                 key,
                 mapTypesRecursive(value),
-            ])
+            ]),
         );
     }
     return mapTypes(obj);
@@ -116,7 +172,7 @@ function mapTypesRecursive(obj) {
 async function parseBlock(
     blockNumber,
     api = null,
-    swallowNonExistingBlocks = false
+    swallowNonExistingBlocks = false,
 ) {
     try {
         if (!api) {
@@ -136,11 +192,11 @@ async function parseBlock(
         } catch (e) {
             if (
                 e.message.includes(
-                    "Unable to retrieve header and parent from supplied hash"
+                    "Unable to retrieve header and parent from supplied hash",
                 )
             ) {
                 console.log(
-                    `Block ${blockNumber} is not yet avaiable, skipping.`
+                    `Block ${blockNumber} is not yet avaiable, skipping.`,
                 );
                 if (swallowNonExistingBlocks) return;
                 throw e;
@@ -174,6 +230,7 @@ async function parseBlock(
 
         const extrinsicPromises = signedBlock.block.extrinsics.map(
             async (ex, extrinsicIndex) => {
+                let skipInsertExtrinsic = false;
                 let extrinsic = ex.toHuman();
                 extrinsic.success = false;
                 extrinsic.blockNumber = blockNumber;
@@ -186,7 +243,7 @@ async function parseBlock(
                     );
                 });
                 if (["setValidationData"].includes(extrinsic.method.method))
-                    return;
+                    skipInsertExtrinsic = true;
                 if (
                     extrinsic.method.section === "timestamp" &&
                     extrinsic.method.method === "set"
@@ -194,7 +251,7 @@ async function parseBlock(
                     block.timestamp = parseInt(
                         extrinsic.method.args.now.replaceAll(",", "")
                     );
-                    return;
+                    skipInsertExtrinsic = true;
                 }
 
                 extrinsic.timestamp = block.timestamp;
@@ -202,7 +259,7 @@ async function parseBlock(
                     .filter(
                         ({ phase }) =>
                             phase.isApplyExtrinsic &&
-                            phase.asApplyExtrinsic.eq(extrinsicIndex)
+                            phase.asApplyExtrinsic.eq(extrinsicIndex),
                     )
                     .map((e) => e.toHuman());
 
@@ -231,15 +288,16 @@ async function parseBlock(
                             return;
                         }
                         await insertIntoCollection("events", e.event);
-                    })
+                    }),
                 );
 
                 extrinsic = { ...extrinsic, ...extrinsic.method };
-                await insertIntoCollection("extrinsics", extrinsic);
+                if (!skipInsertExtrinsic) {
+                    await insertIntoCollection("extrinsics", extrinsic);
+                }
             }
         );
         await Promise.all(extrinsicPromises);
-
         const systemEvents = allRecords
             .filter(
                 ({ phase }) => phase.isFinalization || phase.isInitialization
@@ -258,7 +316,6 @@ async function parseBlock(
                 await insertIntoCollection("events", e.event);
             })
         );
-
         await insertIntoCollection("blocks", block);
     } catch (e) {
         throw e;
@@ -269,7 +326,7 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
     const numConcurrentJobs = NUM_CONCURRENT_JOBS;
     for (let i = blockNumber; i <= endBlockNumber; i += numConcurrentJobs) {
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
-            (idx) => idx + i
+            (idx) => idx + i,
         );
         indexes = indexes.filter((idx) => idx <= endBlockNumber);
         let msg = `processing blocks ${indexes[0]} - ${
@@ -310,7 +367,7 @@ export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
         .fill()
         .map((_, idx) => blockNumber + idx);
     let unprocessedBlockNumbers = expectedBlockNumbers.filter(
-        (e) => !processedBlockNumbers.includes(e)
+        (e) => !processedBlockNumbers.includes(e),
     );
     return unprocessedBlockNumbers;
 }
@@ -318,7 +375,7 @@ export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
 export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
     const unprocessedBlockNumbers = await findUnprocessedBlockNumbers(
         blockNumber,
-        endBlockNumber
+        endBlockNumber,
     );
     if (unprocessedBlockNumbers.length > 0) {
         console.log("Found some unprocessed blocks:", unprocessedBlockNumbers);
@@ -333,7 +390,7 @@ export async function findAllUnprocessedBlockNumbers() {
     const cursor = coll
         .find(
             { height: { $gte: START_BLOCK } }, // include START_BLOCK
-            { projection: { height: 1, _id: 0 } }
+            { projection: { height: 1, _id: 0 } },
         )
         .sort({ height: 1 });
 
@@ -394,9 +451,9 @@ async function catchUpAndIndexLive(api) {
                 // and it could be that it just took them very long and were not yet processed
                 Math.max(
                     lastProcessedBlockNumber - NUM_CONCURRENT_JOBS * 5,
-                    START_BLOCK
+                    START_BLOCK,
                 ),
-                currentBlockNumber - 1
+                currentBlockNumber - 1,
             );
             firstRun = false;
         }
@@ -410,7 +467,7 @@ async function catchUpAndIndexLive(api) {
                 if (start <= end) {
                     const blockNumbers = Array.from(
                         { length: end - start + 1 },
-                        (_, i) => start + i
+                        (_, i) => start + i,
                     );
                     await batchProcessBlocks(api, blockNumbers);
                 }
@@ -423,6 +480,7 @@ async function catchUpAndIndexLive(api) {
                 continue;
             }
         }
+        console.log(`Processed block ${currentBlockNumber}`);
 
         if (currentBlockNumber - lastCheckAtHeight >= 10) {
             await parseUnprocessedBlocks(
@@ -443,7 +501,7 @@ async function getLastestFinalizedBlockNumber(api) {
     return parseInt(
         (await getLastFinalizedBlock(api)).block.header
             .toHuman()
-            .number.replaceAll(",", "")
+            .number.replaceAll(",", ""),
     );
 }
 
@@ -464,7 +522,7 @@ async function getLastAuthoredBlocks(api) {
 async function getBlockAuthor(api, blockNumber) {
     const lastAuthoredBlocks = await getLastAuthoredBlocks(api);
     const authorEntry = lastAuthoredBlocks.find(
-        ([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber
+        ([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber,
     );
     return authorEntry ? authorEntry[0][0] : null;
 }
@@ -494,9 +552,9 @@ export async function main() {
             api,
             Math.max(
                 lastProcessedBlockNumber - 2 * NUM_CONCURRENT_JOBS,
-                START_BLOCK
+                START_BLOCK,
             ),
-            currentBlockNumber
+            currentBlockNumber,
         );
         lastProcessedBlockNumber = await getLastProcessedBlockNumber(api);
         currentBlockNumber = await getLastestFinalizedBlockNumber(api);
