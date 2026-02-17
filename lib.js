@@ -106,10 +106,11 @@ async function insertIntoCollection(collection, document) {
     } catch (e) {
         if (e.message.includes("E11000 duplicate key error")) {
             console.log(
-                `Skippping dup key ${document._id} in collection ${collection}`
+                `Skipping dup key ${document._id} in collection ${collection}`
             );
             return;
         }
+        throw e;
     }
 }
 
@@ -172,8 +173,21 @@ async function parseBlock(
             height: blockNumber,
             timestamp: null,
             author: await getBlockAuthor(apiAt, blockNumber),
-            specversion: apiAt.runtimeVersion.specVersion.toNumber(),
         };
+
+        // Extract timestamp before processing extrinsics concurrently
+        for (const ex of signedBlock.block.extrinsics) {
+            const extrinsic = ex.toHuman();
+            if (
+                extrinsic.method.section === "timestamp" &&
+                extrinsic.method.method === "set"
+            ) {
+                block.timestamp = parseInt(
+                    extrinsic.method.args.now.replaceAll(",", "")
+                );
+                break;
+            }
+        }
 
         // Collect promises for all extrinsics and their events
         const extrinsicPromises = signedBlock.block.extrinsics.map(
@@ -195,12 +209,8 @@ async function parseBlock(
                 if (
                     extrinsic.method.section === "timestamp" &&
                     extrinsic.method.method === "set"
-                ) {
-                    block.timestamp = parseInt(
-                        extrinsic.method.args.now.replaceAll(",", "")
-                    );
+                )
                     skipInsertExtrinsic = true;
-                }
 
                 extrinsic.timestamp = block.timestamp;
                 const events = allRecords
@@ -379,10 +389,11 @@ async function catchUpAndIndexLive(api) {
     await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
         const currentBlockNumber = parseInt(header.number.toString());
         if (firstRun) {
+            firstRun = false;
             console.log("catching up with chain");
-            catchUpWithChain(
+            await catchUpWithChain(
                 api,
-                // some margin of safety, no harm if the blaock were already indexed
+                // some margin of safety, no harm if the block were already indexed
                 // and it could be that it just took them very long and were not yet processed
                 Math.max(
                     lastProcessedBlockNumber - NUM_CONCURRENT_JOBS * 5,
@@ -390,7 +401,6 @@ async function catchUpAndIndexLive(api) {
                 ),
                 currentBlockNumber - 1
             );
-            firstRun = false;
         }
 
         console.log(`Chain is at block: #${currentBlockNumber}`);
