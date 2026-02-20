@@ -13,6 +13,7 @@
     "@polkadot/api": "^16.4.8",
     "csv": "^6.3.1",
     "dotenv": "^16.4.5",
-    "mongodb": "^5.0"
+    "mongodb": "^5.0",
+    "p-limit": "^7.3.0"
   }
 }
