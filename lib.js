@@ -37,13 +37,15 @@ function waitForConnection(api, timeoutMs = 120000) {
     if (api.isConnected) return Promise.resolve();
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
+            api.off("connected", onConnected);
             reject(new Error(`WS reconnect timed out after ${timeoutMs}ms`));
         }, timeoutMs);
-        const unsub = api.on("connected", () => {
+        function onConnected() {
             clearTimeout(timeout);
-            unsub();
+            api.off("connected", onConnected);
             resolve();
-        });
+        }
+        api.on("connected", onConnected);
     });
 }
 
