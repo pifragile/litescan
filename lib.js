@@ -27,10 +27,25 @@ export const NUM_CONCURRENT_JOBS = parseInt(process.env.NUM_CONCURRENT_JOBS);
 export const START_BLOCK = parseInt(process.env.START_BLOCK || 1);
 const MAX_RPC_CONCURRENCY = parseInt(process.env.MAX_RPC_CONCURRENCY || 10);
 const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || 0);
+const WS_RECONNECT_MS = parseInt(process.env.WS_RECONNECT_MS || 30000);
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
 const INITIAL_RETRY_DELAY_MS = 5000;
 
 const rpcLimit = pLimit(MAX_RPC_CONCURRENCY);
+
+function waitForConnection(api, timeoutMs = 120000) {
+    if (api.isConnected) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error(`WS reconnect timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        const unsub = api.on("connected", () => {
+            clearTimeout(timeout);
+            unsub();
+            resolve();
+        });
+    });
+}
 
 export async function getLastProcessedBlockNumber() {
     try {
@@ -146,7 +161,7 @@ async function parseBlock(
     { swallowNonExistingBlocks = false, cachedAuthoredBlocks = null } = {}
 ) {
     if (!api) {
-        const wsProvider = new WsProvider(RPC_NODE);
+        const wsProvider = new WsProvider(RPC_NODE, WS_RECONNECT_MS);
         api = await ApiPromise.create({
             provider: wsProvider,
         });
@@ -321,6 +336,13 @@ async function processBlocksWithRetry(api, blockNumbers) {
             `Retrying ${failed.length}/${remaining.length} failed blocks in ${Math.round(waitMs / 1000)}s`
         );
         await new Promise((r) => setTimeout(r, waitMs));
+
+        if (!api.isConnected) {
+            console.log("WS disconnected, waiting for reconnect...");
+            await waitForConnection(api);
+            console.log("WS reconnected.");
+        }
+
         delay = Math.min(delay * 2, MAX_RETRY_DELAY_MS);
         remaining = failed;
     }
@@ -534,10 +556,10 @@ async function getBlockAuthor(api, blockNumber) {
 
 export async function main() {
     console.log(
-        `Config: NUM_CONCURRENT_JOBS=${NUM_CONCURRENT_JOBS}, MAX_RPC_CONCURRENCY=${MAX_RPC_CONCURRENCY}, BATCH_DELAY_MS=${BATCH_DELAY_MS}`
+        `Config: NUM_CONCURRENT_JOBS=${NUM_CONCURRENT_JOBS}, MAX_RPC_CONCURRENCY=${MAX_RPC_CONCURRENCY}, BATCH_DELAY_MS=${BATCH_DELAY_MS}, WS_RECONNECT_MS=${WS_RECONNECT_MS}`
     );
 
-    const wsProvider = new WsProvider(RPC_NODE);
+    const wsProvider = new WsProvider(RPC_NODE, WS_RECONNECT_MS);
     const api = await ApiPromise.create({
         provider: wsProvider,
     });
