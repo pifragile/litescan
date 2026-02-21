@@ -14,7 +14,10 @@ services:
   indexer:
     build: .
     restart: always
+    ports:
+      - 9615:9615
     environment:
+      METRICS_PORT: 9615
       DB_URL: mongodb://root:example@mongo:27017/
       DB_USE_SSL: false
       NUM_CONCURRENT_JOBS: 100

@@ -6,6 +6,16 @@ import { MongoClient } from "mongodb";
 import * as dotenv from "dotenv";
 dotenv.config();
 
+import { gauge, counter, startMetricsServer } from "./metrics.js";
+
+const mChainFinalized = gauge("litescan_chain_finalized_block", "Latest known finalized block on chain");
+const mLastIndexed = gauge("litescan_last_indexed_block", "Last block indexed into the database");
+const mBlocksProcessed = counter("litescan_blocks_processed_total", "Total number of blocks processed");
+const mBlocksBehind = gauge("litescan_blocks_behind", "Number of blocks behind chain head");
+const mWsConnected = gauge("litescan_ws_connected", "WebSocket connection status (1=connected, 0=disconnected)");
+const mMode = gauge("litescan_live_mode", "Indexer mode (1=live, 0=catching up)");
+const mSyncEta = gauge("litescan_sync_eta_seconds", "Estimated seconds to reach chain head (0 when live)");
+
 export const DEBUG = process.env.DEBUG === "true";
 const config =
     process.env.DB_USE_SSL === "true"
@@ -321,14 +331,19 @@ async function processBlocksWithRetry(api, blockNumbers) {
         );
 
         const failed = [];
+        let succeeded = 0;
         results.forEach((result, i) => {
             if (result.status === "rejected") {
                 failed.push(remaining[i]);
                 console.log(
                     `Block ${remaining[i]} failed: ${result.reason?.message || result.reason}`
                 );
+            } else {
+                succeeded++;
             }
         });
+
+        mBlocksProcessed.inc(succeeded);
 
         if (failed.length === 0) break;
 
@@ -350,19 +365,41 @@ async function processBlocksWithRetry(api, blockNumbers) {
     }
 }
 
+function formatEta(sec) {
+    if (sec > 3600) return `${(sec / 3600).toFixed(1)}h`;
+    if (sec > 60) return `${(sec / 60).toFixed(1)}m`;
+    return `${Math.round(sec)}s`;
+}
+
 async function catchUpWithChain(api, blockNumber, endBlockNumber) {
     const numConcurrentJobs = NUM_CONCURRENT_JOBS;
+    const totalBlocks = endBlockNumber - blockNumber + 1;
+    const syncStart = Date.now();
+    let blocksProcessed = 0;
+
     for (let i = blockNumber; i <= endBlockNumber; i += numConcurrentJobs) {
         let indexes = Array.from(Array(numConcurrentJobs).keys()).map(
             (idx) => idx + i
         );
         indexes = indexes.filter((idx) => idx <= endBlockNumber);
-        let msg = `processing blocks ${indexes[0]} - ${
-            indexes[indexes.length - 1]
-        }`;
-        console.time(msg);
+
+        const batchStart = Date.now();
         await processBlocksWithRetry(api, indexes);
-        console.timeEnd(msg);
+        const batchMs = Date.now() - batchStart;
+
+        blocksProcessed += indexes.length;
+        const remaining = totalBlocks - blocksProcessed;
+        const elapsedSec = (Date.now() - syncStart) / 1000;
+        const rate = blocksProcessed / elapsedSec;
+        const etaSec = rate > 0 ? remaining / rate : 0;
+
+        mSyncEta.set(Math.round(etaSec));
+        mLastIndexed.set(indexes[indexes.length - 1]);
+        mBlocksBehind.set(endBlockNumber - indexes[indexes.length - 1]);
+
+        console.log(
+            `blocks ${indexes[0]}-${indexes[indexes.length - 1]} (${batchMs}ms) | ${rate.toFixed(1)} blk/s | ${remaining} behind | ETA ${formatEta(etaSec)}`
+        );
 
         if (BATCH_DELAY_MS > 0) {
             await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
@@ -491,6 +528,7 @@ async function catchUpAndIndexLive(api) {
             );
         }
 
+        mChainFinalized.set(currentBlockNumber);
         console.log(`Chain is at block: #${currentBlockNumber}`);
 
         const start = lastProcessedBlockNumber + 1;
@@ -505,6 +543,8 @@ async function catchUpAndIndexLive(api) {
         }
 
         lastProcessedBlockNumber = currentBlockNumber;
+        mLastIndexed.set(currentBlockNumber);
+        mBlocksBehind.set(0);
 
         if (currentBlockNumber - lastCheckAtHeight >= 10) {
             await parseUnprocessedBlocks(
@@ -557,6 +597,9 @@ async function getBlockAuthor(api, blockNumber) {
 }
 
 export async function main() {
+    const metricsPort = parseInt(process.env.METRICS_PORT || 9615);
+    startMetricsServer(metricsPort);
+
     console.log(
         `Config: NUM_CONCURRENT_JOBS=${NUM_CONCURRENT_JOBS}, MAX_RPC_CONCURRENCY=${MAX_RPC_CONCURRENCY}, BATCH_DELAY_MS=${BATCH_DELAY_MS}, WS_RECONNECT_MS=${WS_RECONNECT_MS}`
     );
@@ -566,11 +609,20 @@ export async function main() {
         provider: wsProvider,
     });
 
+    // Track WS connection state
+    mWsConnected.set(api.isConnected ? 1 : 0);
+    api.on("connected", () => mWsConnected.set(1));
+    api.on("disconnected", () => mWsConnected.set(0));
+
     console.log("Finding unprocessed blocks and process...");
     await findAllUnprocessedBlockNumbers(api, batchProcessBlocks);
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let currentBlockNumber = await getLastestFinalizedBlockNumber(api);
+
+    mChainFinalized.set(currentBlockNumber);
+    mLastIndexed.set(lastProcessedBlockNumber);
+    mBlocksBehind.set(currentBlockNumber - lastProcessedBlockNumber);
 
     while (
         currentBlockNumber - lastProcessedBlockNumber >
@@ -586,9 +638,14 @@ export async function main() {
         );
         lastProcessedBlockNumber = await getLastProcessedBlockNumber(api);
         currentBlockNumber = await getLastestFinalizedBlockNumber(api);
+        mLastIndexed.set(lastProcessedBlockNumber);
+        mChainFinalized.set(currentBlockNumber);
+        mBlocksBehind.set(currentBlockNumber - lastProcessedBlockNumber);
         break;
     }
 
     console.log("Switching to live mode");
+    mMode.set(1);
+    mSyncEta.set(0);
     await catchUpAndIndexLive(api);
 }
