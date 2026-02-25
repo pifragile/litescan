@@ -1,4 +1,5 @@
 import { ApiPromise, WsProvider } from "@polkadot/api";
+import pLimit from "p-limit";
 
 import { MongoClient } from "mongodb";
 
@@ -24,6 +25,29 @@ export const RPC_NODE = process.env.RPC_NODE;
 
 export const NUM_CONCURRENT_JOBS = parseInt(process.env.NUM_CONCURRENT_JOBS);
 export const START_BLOCK = parseInt(process.env.START_BLOCK || 1);
+const MAX_RPC_CONCURRENCY = parseInt(process.env.MAX_RPC_CONCURRENCY || 10);
+const BATCH_DELAY_MS = parseInt(process.env.BATCH_DELAY_MS || 0);
+const WS_RECONNECT_MS = parseInt(process.env.WS_RECONNECT_MS || 30000);
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+const INITIAL_RETRY_DELAY_MS = 5000;
+
+const rpcLimit = pLimit(MAX_RPC_CONCURRENCY);
+
+function waitForConnection(api, timeoutMs = 120000) {
+    if (api.isConnected) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            api.off("connected", onConnected);
+            reject(new Error(`WS reconnect timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        function onConnected() {
+            clearTimeout(timeout);
+            api.off("connected", onConnected);
+            resolve();
+        }
+        api.on("connected", onConnected);
+    });
+}
 
 export async function getLastProcessedBlockNumber() {
     try {
@@ -106,10 +130,11 @@ async function insertIntoCollection(collection, document) {
     } catch (e) {
         if (e.message.includes("E11000 duplicate key error")) {
             console.log(
-                `Skippping dup key ${document._id} in collection ${collection}`
+                `Skipping dup key ${document._id} in collection ${collection}`
             );
             return;
         }
+        throw e;
     }
 }
 
@@ -135,131 +160,193 @@ function mapTypesRecursive(obj) {
 async function parseBlock(
     blockNumber,
     api = null,
-    swallowNonExistingBlocks = false
+    { swallowNonExistingBlocks = false, cachedAuthoredBlocks = null } = {}
 ) {
+    if (!api) {
+        const wsProvider = new WsProvider(RPC_NODE, WS_RECONNECT_MS);
+        api = await ApiPromise.create({
+            provider: wsProvider,
+        });
+    }
+
+    let signedBlock;
+    let blockHash;
     try {
-        if (!api) {
-            const wsProvider = new WsProvider(RPC_NODE);
-            api = await ApiPromise.create({
-                provider: wsProvider,
-            });
-        }
-
-        let signedBlock;
-        let blockHash;
-        try {
-            blockHash = await api.rpc.chain.getBlockHash(blockNumber);
-            signedBlock = await api.rpc.chain.getBlock(blockHash);
-        } catch (e) {
-            if (
-                e.message.includes(
-                    "Unable to retrieve header and parent from supplied hash"
-                )
-            ) {
-                console.log(
-                    `Block ${blockNumber} is not yet avaiable, skipping.`
-                );
-                if (swallowNonExistingBlocks) return;
-                throw e;
-            }
-        }
-
-        const apiAt = await api.at(signedBlock.block.header.hash);
-        const allRecords = await apiAt.query.system.events();
-
-        const block = {
-            _id: blockHash.toHuman(),
-            height: blockNumber,
-            timestamp: null,
-            author: await getBlockAuthor(apiAt, blockNumber),
-            specversion: apiAt.runtimeVersion.specVersion.toNumber(),
-        };
-
-        // Collect promises for all extrinsics and their events
-        const extrinsicPromises = signedBlock.block.extrinsics.map(
-            async (ex, extrinsicIndex) => {
-                let skipInsertExtrinsic = false;
-                let extrinsic = ex.toHuman();
-                extrinsic.success = false;
-                extrinsic.blockNumber = blockNumber;
-                extrinsic.blockHash = blockHash.toHuman();
-                extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
-
-                Object.keys(extrinsic.method.args).forEach(function (key) {
-                    extrinsic.method.args[key] = mapTypes(
-                        extrinsic.method.args[key]
-                    );
-                });
-                if (["setValidationData"].includes(extrinsic.method.method))
-                    skipInsertExtrinsic = true;
-                if (
-                    extrinsic.method.section === "timestamp" &&
-                    extrinsic.method.method === "set"
-                ) {
-                    block.timestamp = parseInt(
-                        extrinsic.method.args.now.replaceAll(",", "")
-                    );
-                    skipInsertExtrinsic = true;
-                }
-
-                extrinsic.timestamp = block.timestamp;
-                const events = allRecords
-                    .filter(
-                        ({ phase }) =>
-                            phase.isApplyExtrinsic &&
-                            phase.asApplyExtrinsic.eq(extrinsicIndex)
-                    )
-                    .map((e) => e.toHuman());
-
-                // Prepare event objects
-                events.forEach((e, eventIndex) => {
-                    e.event.blockNumber = blockNumber;
-                    e.event.blockHash = blockHash.toHuman();
-                    e.event._id = `${extrinsic._id}-${eventIndex}`;
-                    e.event.extrinsicId = extrinsic._id;
-                    e.event.timestamp = block.timestamp;
-                    delete e.event.index;
-                });
-
-                // Insert all events for this extrinsic
-                await Promise.all(
-                    events.map(async (e) => {
-                        if (e.event.method === "ExtrinsicSuccess") {
-                            extrinsic.success = true;
-                            return;
-                        }
-                        await insertIntoCollection("events", e.event);
-                    })
-                );
-
-                extrinsic = { ...extrinsic, ...extrinsic.method };
-                if (!skipInsertExtrinsic) {
-                    await insertIntoCollection("extrinsics", extrinsic);
-                }
-            }
+        blockHash = await rpcLimit(() =>
+            api.rpc.chain.getBlockHash(blockNumber)
         );
-        await Promise.all(extrinsicPromises);
-        const systemEvents = allRecords
-            .filter(
-                ({ phase }) => phase.isFinalization || phase.isInitialization
+        signedBlock = await rpcLimit(() =>
+            api.rpc.chain.getBlock(blockHash)
+        );
+    } catch (e) {
+        if (
+            e.message.includes(
+                "Unable to retrieve header and parent from supplied hash"
             )
-            .map((e) => e.toHuman());
+        ) {
+            console.log(
+                `Block ${blockNumber} is not yet avaiable, skipping.`
+            );
+            if (swallowNonExistingBlocks) return;
+            throw e;
+        }
+        throw e;
+    }
 
-        // Insert all system events
-        await Promise.all(
-            systemEvents.map(async (e, eventIndex) => {
+    const apiAt = await rpcLimit(() =>
+        api.at(signedBlock.block.header.hash)
+    );
+    const allRecords = await rpcLimit(() =>
+        apiAt.query.system.events()
+    );
+
+    const author = cachedAuthoredBlocks
+        ? findAuthorFromCache(cachedAuthoredBlocks, blockNumber)
+        : await getBlockAuthor(apiAt, blockNumber);
+
+    const block = {
+        _id: blockHash.toHuman(),
+        height: blockNumber,
+        timestamp: null,
+        author,
+    };
+
+    // Extract timestamp before processing extrinsics concurrently
+    for (const ex of signedBlock.block.extrinsics) {
+        const extrinsic = ex.toHuman();
+        if (
+            extrinsic.method.section === "timestamp" &&
+            extrinsic.method.method === "set"
+        ) {
+            block.timestamp = parseInt(
+                extrinsic.method.args.now.replaceAll(",", "")
+            );
+            break;
+        }
+    }
+
+    // Collect promises for all extrinsics and their events
+    const extrinsicPromises = signedBlock.block.extrinsics.map(
+        async (ex, extrinsicIndex) => {
+            let skipInsertExtrinsic = false;
+            let extrinsic = ex.toHuman();
+            extrinsic.success = false;
+            extrinsic.blockNumber = blockNumber;
+            extrinsic.blockHash = blockHash.toHuman();
+            extrinsic._id = `${blockNumber}-${extrinsicIndex}`;
+
+            Object.keys(extrinsic.method.args).forEach(function (key) {
+                extrinsic.method.args[key] = mapTypes(
+                    extrinsic.method.args[key]
+                );
+            });
+            if (["setValidationData"].includes(extrinsic.method.method))
+                skipInsertExtrinsic = true;
+            if (
+                extrinsic.method.section === "timestamp" &&
+                extrinsic.method.method === "set"
+            )
+                skipInsertExtrinsic = true;
+
+            extrinsic.timestamp = block.timestamp;
+            const events = allRecords
+                .filter(
+                    ({ phase }) =>
+                        phase.isApplyExtrinsic &&
+                        phase.asApplyExtrinsic.eq(extrinsicIndex)
+                )
+                .map((e) => e.toHuman());
+
+            // Prepare event objects
+            events.forEach((e, eventIndex) => {
                 e.event.blockNumber = blockNumber;
                 e.event.blockHash = blockHash.toHuman();
-                e.event._id = `${blockNumber}-${eventIndex}`;
-                e.event.extrinsicId = null;
+                e.event._id = `${extrinsic._id}-${eventIndex}`;
+                e.event.extrinsicId = extrinsic._id;
                 e.event.timestamp = block.timestamp;
                 delete e.event.index;
-                await insertIntoCollection("events", e.event);
-            })
+            });
+
+            // Insert all events for this extrinsic
+            await Promise.all(
+                events.map(async (e) => {
+                    if (e.event.method === "ExtrinsicSuccess") {
+                        extrinsic.success = true;
+                        return;
+                    }
+                    await insertIntoCollection("events", e.event);
+                })
+            );
+
+            extrinsic = { ...extrinsic, ...extrinsic.method };
+            if (!skipInsertExtrinsic) {
+                await insertIntoCollection("extrinsics", extrinsic);
+            }
+        }
+    );
+    await Promise.all(extrinsicPromises);
+    const systemEvents = allRecords
+        .filter(
+            ({ phase }) => phase.isFinalization || phase.isInitialization
+        )
+        .map((e) => e.toHuman());
+
+    // Insert all system events
+    await Promise.all(
+        systemEvents.map(async (e, eventIndex) => {
+            e.event.blockNumber = blockNumber;
+            e.event.blockHash = blockHash.toHuman();
+            e.event._id = `${blockNumber}-${eventIndex}`;
+            e.event.extrinsicId = null;
+            e.event.timestamp = block.timestamp;
+            delete e.event.index;
+            await insertIntoCollection("events", e.event);
+        })
+    );
+    await insertIntoCollection("blocks", block);
+}
+
+async function processBlocksWithRetry(api, blockNumbers) {
+    let remaining = [...blockNumbers];
+    let delay = INITIAL_RETRY_DELAY_MS;
+
+    // Fetch block authors once for this batch
+    const cachedAuthoredBlocks = await getLastAuthoredBlocks(api);
+
+    while (remaining.length > 0) {
+        const results = await Promise.allSettled(
+            remaining.map((idx) =>
+                parseBlock(idx, api, { cachedAuthoredBlocks })
+            )
         );
-        await insertIntoCollection("blocks", block);
-    } catch (e) {
-        throw e;
+
+        const failed = [];
+        results.forEach((result, i) => {
+            if (result.status === "rejected") {
+                failed.push(remaining[i]);
+                console.log(
+                    `Block ${remaining[i]} failed: ${result.reason?.message || result.reason}`
+                );
+            }
+        });
+
+        if (failed.length === 0) break;
+
+        const jitter = Math.random() * delay * 0.3;
+        const waitMs = Math.min(delay + jitter, MAX_RETRY_DELAY_MS);
+        console.log(
+            `Retrying ${failed.length}/${remaining.length} failed blocks in ${Math.round(waitMs / 1000)}s`
+        );
+        await new Promise((r) => setTimeout(r, waitMs));
+
+        if (!api.isConnected) {
+            console.log("WS disconnected, waiting for reconnect...");
+            await waitForConnection(api);
+            console.log("WS reconnected.");
+        }
+
+        delay = Math.min(delay * 2, MAX_RETRY_DELAY_MS);
+        remaining = failed;
     }
 }
 
@@ -274,36 +361,31 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
             indexes[indexes.length - 1]
         }`;
         console.time(msg);
-
-        while (true) {
-            try {
-                await Promise.all(indexes.map((idx) => parseBlock(idx, api)));
-                break;
-            } catch (e) {
-                console.log(e);
-                await new Promise((r) => setTimeout(r, 5000));
-                continue;
-            }
-        }
+        await processBlocksWithRetry(api, indexes);
         console.timeEnd(msg);
+
+        if (BATCH_DELAY_MS > 0) {
+            await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
+        }
     }
 }
 
 export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
     if (DEBUG) return [];
     const blocks = db.collection("blocks");
-    let processedBlockNumbers = await (
-        await blocks
-            .find({ height: { $gte: blockNumber, $lte: endBlockNumber } })
-            .project({ height: 1, _id: -1 })
-    ).toArray();
-    processedBlockNumbers = processedBlockNumbers.map((e) => e.height);
-    const expectedBlockNumbers = Array(endBlockNumber - blockNumber + 1)
-        .fill()
-        .map((_, idx) => blockNumber + idx);
-    let unprocessedBlockNumbers = expectedBlockNumbers.filter(
-        (e) => !processedBlockNumbers.includes(e)
-    );
+    const cursor = blocks
+        .find({ height: { $gte: blockNumber, $lte: endBlockNumber } })
+        .project({ height: 1, _id: 0 });
+    const processedSet = new Set();
+    for await (const doc of cursor) {
+        processedSet.add(doc.height);
+    }
+    const unprocessedBlockNumbers = [];
+    for (let h = blockNumber; h <= endBlockNumber; h++) {
+        if (!processedSet.has(h)) {
+            unprocessedBlockNumbers.push(h);
+        }
+    }
     return unprocessedBlockNumbers;
 }
 
@@ -318,44 +400,59 @@ export async function parseUnprocessedBlocks(api, blockNumber, endBlockNumber) {
     }
 }
 
-export async function findAllUnprocessedBlockNumbers() {
+export async function findAllUnprocessedBlockNumbers(api, batchCallback) {
     const coll = db.collection("blocks");
 
-    // Include START_BLOCK itself
+    const docCount = await coll.countDocuments({ height: { $gte: START_BLOCK } });
+    if (docCount === 0) {
+        console.log("Empty DB — skipping gap scan, will index sequentially.");
+        return;
+    }
+
     const cursor = coll
         .find(
-            { height: { $gte: START_BLOCK } }, // include START_BLOCK
+            { height: { $gte: START_BLOCK } },
             { projection: { height: 1, _id: 0 } }
         )
         .sort({ height: 1 });
 
-    let prevHeight = START_BLOCK - 1; // so missing START_BLOCK is detected
-    let totalDocs = 0;
-    const missing = [];
-    const outOfRange = [];
-    let maxHeight = -Infinity;
-    let minHeight = Infinity;
+    let prevHeight = START_BLOCK - 1;
+    let missingBatch = [];
+    let totalMissing = 0;
+    const CHUNK_SIZE = NUM_CONCURRENT_JOBS || 100;
 
     for await (const doc of cursor) {
         const h = Number(doc.height);
         if (Number.isNaN(h)) continue;
 
-        totalDocs++;
-        maxHeight = Math.max(maxHeight, h);
-        minHeight = Math.min(minHeight, h);
-
-        if (h < 0) outOfRange.push(h);
-
-        // Detect missing heights starting from START_BLOCK
         if (h > prevHeight + 1) {
             for (let m = prevHeight + 1; m < h; m++) {
-                missing.push(m);
+                missingBatch.push(m);
+                if (missingBatch.length >= CHUNK_SIZE) {
+                    totalMissing += missingBatch.length;
+                    console.log(
+                        `Processing ${missingBatch.length} missing blocks (${totalMissing} total so far)`
+                    );
+                    await batchCallback(api, missingBatch);
+                    missingBatch = [];
+                }
             }
         }
         prevHeight = h;
     }
 
-    return missing;
+    // Process remaining
+    if (missingBatch.length > 0) {
+        totalMissing += missingBatch.length;
+        console.log(
+            `Processing ${missingBatch.length} missing blocks (${totalMissing} total)`
+        );
+        await batchCallback(api, missingBatch);
+    }
+
+    if (totalMissing > 0) {
+        console.log(`Finished reprocessing ${totalMissing} missing blocks.`);
+    }
 }
 
 export async function batchProcessBlocks(api, blockNumbers) {
@@ -363,58 +460,51 @@ export async function batchProcessBlocks(api, blockNumbers) {
         const batchSize = NUM_CONCURRENT_JOBS || 1;
         for (let i = 0; i < blockNumbers.length; i += batchSize) {
             const batch = blockNumbers.slice(i, i + batchSize);
-            const msg = `processing blocks ${batch}`;
+            const msg = `processing blocks ${batch[0]}-${batch[batch.length - 1]}`;
             console.time(msg);
-            await Promise.all(batch.map((idx) => parseBlock(idx, api)));
+            await processBlocksWithRetry(api, batch);
             console.timeEnd(msg);
+
+            if (BATCH_DELAY_MS > 0) {
+                await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
+            }
         }
     }
 }
 
 async function catchUpAndIndexLive(api) {
-    // last block number from safe base: 5506899
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let firstRun = true;
     let lastCheckAtHeight = lastProcessedBlockNumber;
     await api.rpc.chain.subscribeFinalizedHeads(async (header) => {
         const currentBlockNumber = parseInt(header.number.toString());
         if (firstRun) {
+            firstRun = false;
             console.log("catching up with chain");
-            catchUpWithChain(
+            await catchUpWithChain(
                 api,
-                // some margin of safety, no harm if the blaock were already indexed
-                // and it could be that it just took them very long and were not yet processed
                 Math.max(
                     lastProcessedBlockNumber - NUM_CONCURRENT_JOBS * 5,
                     START_BLOCK
                 ),
                 currentBlockNumber - 1
             );
-            firstRun = false;
         }
 
         console.log(`Chain is at block: #${currentBlockNumber}`);
 
-        while (true) {
-            try {
-                const start = lastProcessedBlockNumber + 1;
-                const end = currentBlockNumber;
-                if (start <= end) {
-                    const blockNumbers = Array.from(
-                        { length: end - start + 1 },
-                        (_, i) => start + i
-                    );
-                    await batchProcessBlocks(api, blockNumbers);
-                }
-
-                lastProcessedBlockNumber = currentBlockNumber;
-                break;
-            } catch (e) {
-                console.log(e);
-                await new Promise((r) => setTimeout(r, 5000));
-                continue;
-            }
+        const start = lastProcessedBlockNumber + 1;
+        const end = currentBlockNumber;
+        if (start <= end) {
+            const blockNumbers = Array.from(
+                { length: end - start + 1 },
+                (_, i) => start + i
+            );
+            // processBlocksWithRetry handles retries with backoff internally
+            await batchProcessBlocks(api, blockNumbers);
         }
+
+        lastProcessedBlockNumber = currentBlockNumber;
 
         if (currentBlockNumber - lastCheckAtHeight >= 10) {
             await parseUnprocessedBlocks(
@@ -441,8 +531,9 @@ async function getLastestFinalizedBlockNumber(api) {
 
 async function getLastAuthoredBlocks(api) {
     try {
-        const lastAuthoredBlocks =
-            await api.query.collatorSelection.lastAuthoredBlock.entries();
+        const lastAuthoredBlocks = await rpcLimit(() =>
+            api.query.collatorSelection.lastAuthoredBlock.entries()
+        );
         return lastAuthoredBlocks.map(([key, value]) => {
             const collator = key.toHuman();
             const blockNumber = value.toNumber();
@@ -453,25 +544,30 @@ async function getLastAuthoredBlocks(api) {
     }
 }
 
-async function getBlockAuthor(api, blockNumber) {
-    const lastAuthoredBlocks = await getLastAuthoredBlocks(api);
-    const authorEntry = lastAuthoredBlocks.find(
+function findAuthorFromCache(cachedAuthoredBlocks, blockNumber) {
+    const authorEntry = cachedAuthoredBlocks.find(
         ([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber
     );
     return authorEntry ? authorEntry[0][0] : null;
 }
 
+async function getBlockAuthor(api, blockNumber) {
+    const lastAuthoredBlocks = await getLastAuthoredBlocks(api);
+    return findAuthorFromCache(lastAuthoredBlocks, blockNumber);
+}
+
 export async function main() {
-    const wsProvider = new WsProvider(RPC_NODE);
+    console.log(
+        `Config: NUM_CONCURRENT_JOBS=${NUM_CONCURRENT_JOBS}, MAX_RPC_CONCURRENCY=${MAX_RPC_CONCURRENCY}, BATCH_DELAY_MS=${BATCH_DELAY_MS}, WS_RECONNECT_MS=${WS_RECONNECT_MS}`
+    );
+
+    const wsProvider = new WsProvider(RPC_NODE, WS_RECONNECT_MS);
     const api = await ApiPromise.create({
         provider: wsProvider,
     });
 
     console.log("Finding unprocessed blocks and process...");
-    const unprocessedBlockNumbers = await findAllUnprocessedBlockNumbers();
-    console.log(`Found ${unprocessedBlockNumbers.length} unprocessed blocks.`);
-
-    await batchProcessBlocks(api, unprocessedBlockNumbers);
+    await findAllUnprocessedBlockNumbers(api, batchProcessBlocks);
 
     let lastProcessedBlockNumber = await getLastProcessedBlockNumber();
     let currentBlockNumber = await getLastestFinalizedBlockNumber(api);
